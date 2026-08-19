@@ -2,7 +2,40 @@
   <div class="chat-app">
     <header class="chat-header">
       <div class="header-left">
-        <div class="bot-avatar">🤖</div>
+        <div class="bot-avatar" aria-label="AI 助手">
+          <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="bot-svg">
+            <defs>
+              <linearGradient id="hairGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#7c5cff"/>
+                <stop offset="100%" style="stop-color:#4a3aff"/>
+              </linearGradient>
+              <linearGradient id="skinGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#fff5ea"/>
+                <stop offset="100%" style="stop-color:#ffe4d0"/>
+              </linearGradient>
+              <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#6366f1"/>
+                <stop offset="100%" style="stop-color:#4338ca"/>
+              </linearGradient>
+            </defs>
+            <ellipse cx="32" cy="58" rx="20" ry="4" fill="rgba(0,0,0,0.1)"/>
+            <rect x="14" y="28" width="36" height="28" rx="12" fill="url(#bodyGrad)"/>
+            <circle cx="32" cy="16" r="14" fill="url(#skinGrad)"/>
+            <path d="M18 14 Q18 4 32 4 Q46 4 46 14 Q46 10 42 8 Q38 2 32 3 Q26 2 22 8 Q18 10 18 14 Z" fill="url(#hairGrad)"/>
+            <path d="M20 12 Q22 6 28 5 Q30 9 27 12 Z" fill="#fff" opacity="0.4"/>
+            <ellipse cx="26" cy="18" rx="2.2" ry="3" fill="#2d1b69"/>
+            <ellipse cx="38" cy="18" rx="2.2" ry="3" fill="#2d1b69"/>
+            <circle cx="26.8" cy="17" r="0.8" fill="#fff"/>
+            <circle cx="38.8" cy="17" r="0.8" fill="#fff"/>
+            <ellipse cx="22" cy="22" rx="2.5" ry="1.5" fill="#ffb4a2" opacity="0.6"/>
+            <ellipse cx="42" cy="22" rx="2.5" ry="1.5" fill="#ffb4a2" opacity="0.6"/>
+            <path d="M29 24 Q32 27 35 24" stroke="#2d1b69" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+            <circle cx="10" cy="36" r="3" fill="#a5b4fc" opacity="0.8"/>
+            <circle cx="54" cy="36" r="3" fill="#a5b4fc" opacity="0.8"/>
+            <rect x="26" y="38" width="12" height="8" rx="2" fill="#818cf8"/>
+            <circle cx="32" cy="42" r="2" fill="#c7d2fe"/>
+          </svg>
+        </div>
         <div class="header-info">
           <h1 class="header-title">RAG 智能问答</h1>
           <p class="header-subtitle">
@@ -11,26 +44,40 @@
           </p>
         </div>
       </div>
-      <a-button type="text" size="small" @click="clearHistory" v-if="messages.length > 0">
-        <template #icon><icon-delete /></template>
+      <a-button
+        v-if="messages.length > 0"
+        type="text"
+        size="small"
+        class="clear-btn"
+        @click="clearHistory"
+        aria-label="清空聊天记录"
+      >
+        <template #icon><icon-delete :size="16" /></template>
         清空记录
       </a-button>
     </header>
 
-    <div ref="listRef" class="chat-body">
+    <main
+      ref="listRef"
+      class="chat-body"
+      role="log"
+      aria-live="polite"
+      aria-label="聊天消息"
+    >
       <div v-if="messages.length === 0" class="empty-state">
         <div class="empty-icon">💬</div>
         <p class="empty-title">开始你的智能问答</p>
         <p class="empty-desc">输入问题，AI 将基于本地知识库为你解答</p>
         <div class="quick-questions">
-          <span
+          <button
             v-for="q in suggestions"
             :key="q"
             class="quick-tag"
             @click="quickAsk(q)"
+            :aria-label="'快速提问：' + q"
           >
             {{ q }}
-          </span>
+          </button>
         </div>
       </div>
 
@@ -42,23 +89,56 @@
       >
         <div class="msg-avatar" :class="msg.role === 'user' ? 'avatar--user' : 'avatar--bot'">
           <span v-if="msg.role === 'user'">我</span>
-          <span v-else>🤖</span>
+          <svg v-else viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" class="msg-svg" aria-hidden="true">
+            <defs>
+              <linearGradient id="hairGradMsg" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#7c5cff"/>
+                <stop offset="100%" style="stop-color:#4a3aff"/>
+              </linearGradient>
+              <linearGradient id="skinGradMsg" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#fff5ea"/>
+                <stop offset="100%" style="stop-color:#ffe4d0"/>
+              </linearGradient>
+              <linearGradient id="bodyGradMsg" x1="0%" y1="0%" x2="0%" y2="100%">
+                <stop offset="0%" style="stop-color:#6366f1"/>
+                <stop offset="100%" style="stop-color:#4338ca"/>
+              </linearGradient>
+            </defs>
+            <circle cx="32" cy="16" r="12" fill="url(#skinGradMsg)"/>
+            <path d="M20 14 Q20 4 32 3 Q44 4 44 14 Q44 10 40 8 Q36 3 32 4 Q28 3 24 8 Q20 10 20 14 Z" fill="url(#hairGradMsg)"/>
+            <ellipse cx="26" cy="17" rx="2" ry="2.6" fill="#2d1b69"/>
+            <ellipse cx="38" cy="17" rx="2" ry="2.6" fill="#2d1b69"/>
+            <circle cx="26.7" cy="16.2" r="0.7" fill="#fff"/>
+            <circle cx="38.7" cy="16.2" r="0.7" fill="#fff"/>
+            <ellipse cx="22" cy="21" rx="2.2" ry="1.3" fill="#ffb4a2" opacity="0.6"/>
+            <ellipse cx="42" cy="21" rx="2.2" ry="1.3" fill="#ffb4a2" opacity="0.6"/>
+            <path d="M29 23 Q32 25.5 35 23" stroke="#2d1b69" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+            <rect x="16" y="27" width="32" height="22" rx="10" fill="url(#bodyGradMsg)"/>
+            <rect x="27" y="32" width="10" height="6" rx="1.5" fill="#818cf8"/>
+            <circle cx="32" cy="35" r="1.6" fill="#c7d2fe"/>
+          </svg>
         </div>
-        <div class="msg-bubble" :class="msg.role === 'user' ? 'bubble--self' : 'bubble--bot'">
-          <div v-if="msg.loading" class="typing-dots">
+        <div
+          class="msg-bubble"
+          :class="[
+            msg.role === 'user' ? 'bubble--self' : 'bubble--bot',
+            msg.streaming ? 'bubble--streaming' : ''
+          ]"
+        >
+          <div v-if="msg.loading" class="typing-dots" role="status" aria-label="正在输入">
             <span></span>
             <span></span>
             <span></span>
           </div>
           <template v-else>
             {{ msg.content }}
-            <span v-if="msg.streaming" class="cursor-blink"></span>
+            <span v-if="msg.streaming" class="streaming-dots" aria-hidden="true">/...</span>
           </template>
         </div>
       </div>
-    </div>
+    </main>
 
-    <div class="chat-footer">
+    <footer class="chat-footer">
       <div class="input-wrapper">
         <a-textarea
           v-model="inputText"
@@ -67,6 +147,7 @@
           :disabled="isStreaming"
           @keydown="onKeyDown"
           class="chat-input"
+          aria-label="消息输入框"
         />
         <a-button
           type="primary"
@@ -75,18 +156,22 @@
           @click="sendMessage"
           shape="round"
           size="large"
+          class="send-btn"
+          aria-label="发送消息"
         >
+          <template #icon v-if="!isStreaming"><icon-send :size="16" /></template>
           发送
         </a-button>
       </div>
-    </div>
+      <p class="footer-hint">AI 回答仅供参考，请核实重要信息</p>
+    </footer>
   </div>
 </template>
 
 <script setup>
 import { ref, nextTick, onMounted, watch } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconSend } from '@arco-design/web-vue/es/icon'
 
 const STORAGE_KEY = 'rag_chat_session'
 const SESSION_KEY = 'rag_session_id'
@@ -104,7 +189,6 @@ const suggestions = [
   '焦煤怎么操作？',
 ]
 
-// sessionStorage: 刷新保留，关闭浏览器/标签页丢失
 const loadFromStorage = () => {
   try {
     const saved = sessionStorage.getItem(STORAGE_KEY)
@@ -179,7 +263,6 @@ const sendMessage = async () => {
       throw new Error(`HTTP ${response.status}`)
     }
 
-    // 从响应头拿 session_id（SSE 的 header 也可以读）
     const respSessionId = response.headers.get('X-Session-Id')
     if (respSessionId) {
       sessionId.value = respSessionId
@@ -245,15 +328,15 @@ const clearHistory = () => {
     okText: '清空',
     cancelText: '取消',
     onOk: async () => {
+      const currentSessionId = sessionId.value
       messages.value = []
       sessionStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(SESSION_KEY)
       sessionId.value = ''
-      // 通知后端清空
       try {
         await fetch('/chat/history', {
           method: 'DELETE',
-          headers: sessionId.value ? { 'X-Session-Id': sessionId.value } : {},
+          headers: currentSessionId ? { 'X-Session-Id': currentSessionId } : {},
         })
       } catch (e) { /* ignore */ }
       Message.success('已清空聊天记录')
@@ -275,6 +358,8 @@ onMounted(() => {
   width: 100%;
   background-color: #ededed;
   font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ===== 顶部 ===== */
@@ -287,6 +372,8 @@ onMounted(() => {
   background-color: #fff;
   border-bottom: 1px solid #e5e5e5;
   flex-shrink: 0;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
+  z-index: 10;
 }
 
 .header-left {
@@ -298,12 +385,19 @@ onMounted(() => {
 .bot-avatar {
   width: 40px;
   height: 40px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #67c23a 0%, #95d475 100%);
+  border-radius: 50%;
+  background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 22px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3);
+}
+
+.bot-svg {
+  width: 36px;
+  height: 36px;
+  display: block;
 }
 
 .header-title {
@@ -327,6 +421,22 @@ onMounted(() => {
   height: 8px;
   border-radius: 50%;
   background-color: #07c160;
+  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.18);
+}
+
+.clear-btn {
+  color: #666;
+  transition: color 150ms ease-out, background-color 150ms ease-out;
+}
+
+.clear-btn:hover {
+  color: #fa5151;
+  background-color: rgba(250, 81, 81, 0.08);
+}
+
+.clear-btn:focus-visible {
+  outline: 2px solid #07c160;
+  outline-offset: 2px;
 }
 
 /* ===== 聊天区 ===== */
@@ -334,7 +444,24 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   padding: 16px 12px;
-  background-color: #ededed;
+  scroll-behavior: smooth;
+}
+
+.chat-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.chat-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-body::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 3px;
+}
+
+.chat-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
 }
 
 .msg-row {
@@ -345,6 +472,18 @@ onMounted(() => {
   max-width: 800px;
   margin-left: auto;
   margin-right: auto;
+  animation: msg-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .msg-row--self {
@@ -365,8 +504,15 @@ onMounted(() => {
 }
 
 .avatar--bot {
-  background: linear-gradient(135deg, #67c23a 0%, #95d475 100%);
-  font-size: 22px;
+  background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%);
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(99, 102, 241, 0.25);
+}
+
+.msg-svg {
+  width: 32px;
+  height: 32px;
+  display: block;
 }
 
 .avatar--user {
@@ -418,20 +564,28 @@ onMounted(() => {
   border-left: 6px solid #95ec69;
 }
 
-/* 光标闪烁 */
-.cursor-blink {
-  display: inline-block;
-  width: 2px;
-  height: 16px;
-  background-color: #666;
-  margin-left: 2px;
-  vertical-align: middle;
-  animation: blink 1s infinite;
+.bubble--streaming {
+  min-height: 1.6em;
 }
 
-@keyframes blink {
-  0%, 50% { opacity: 1; }
-  51%, 100% { opacity: 0; }
+/* 流式输出 /... 动态效果 */
+.streaming-dots {
+  display: inline-block;
+  margin-left: 2px;
+  color: #999;
+  font-weight: 500;
+  animation: dots-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes dots-pulse {
+  0%, 100% {
+    opacity: 0.4;
+    letter-spacing: 0;
+  }
+  50% {
+    opacity: 1;
+    letter-spacing: 1px;
+  }
 }
 
 /* loading 动画 */
@@ -439,31 +593,33 @@ onMounted(() => {
   display: flex;
   gap: 4px;
   padding: 4px 0;
+  align-items: center;
 }
 
 .typing-dots span {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background-color: #bbb;
-  animation: typing 1.4s infinite;
+  opacity: 0.5;
+  animation: typing 1.2s ease-in-out infinite;
 }
 
 .typing-dots span:nth-child(2) {
-  animation-delay: 0.2s;
+  animation-delay: 0.15s;
 }
 
 .typing-dots span:nth-child(3) {
-  animation-delay: 0.4s;
+  animation-delay: 0.3s;
 }
 
 @keyframes typing {
-  0%, 60%, 100% {
-    transform: translateY(0);
+  0%, 80%, 100% {
+    transform: scale(0.8);
     opacity: 0.4;
   }
-  30% {
-    transform: translateY(-6px);
+  40% {
+    transform: scale(1);
     opacity: 1;
   }
 }
@@ -473,6 +629,12 @@ onMounted(() => {
   text-align: center;
   padding: 60px 20px 20px;
   color: #999;
+  animation: fade-in 250ms ease-out both;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .empty-icon {
@@ -484,6 +646,7 @@ onMounted(() => {
   font-size: 16px;
   color: #666;
   margin: 0 0 8px 0;
+  font-weight: 500;
 }
 
 .empty-desc {
@@ -509,20 +672,32 @@ onMounted(() => {
   font-size: 13px;
   color: #666;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: all 150ms ease-out;
+  font-family: inherit;
 }
 
 .quick-tag:hover {
   background-color: #f5f5f5;
   border-color: #ccc;
   color: #333;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.quick-tag:active {
+  transform: translateY(0);
+}
+
+.quick-tag:focus-visible {
+  outline: 2px solid #07c160;
+  outline-offset: 2px;
 }
 
 /* ===== 底部输入区 ===== */
 .chat-footer {
   background-color: #f7f7f7;
   border-top: 1px solid #e5e5e5;
-  padding: 12px 16px;
+  padding: 12px 16px 8px;
   flex-shrink: 0;
 }
 
@@ -542,5 +717,123 @@ onMounted(() => {
   border-radius: 6px;
   border-color: #e5e5e5;
   background: #fff;
+  font-size: 15px;
+  line-height: 1.6;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.chat-input :deep(.arco-textarea:hover) {
+  border-color: #ccc;
+}
+
+.chat-input :deep(.arco-textarea-focused) {
+  border-color: #07c160;
+  box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.12);
+}
+
+.send-btn {
+  background: linear-gradient(135deg, #07c160 0%, #10b981 100%);
+  border: none;
+  font-weight: 500;
+  transition: transform 150ms ease-out, box-shadow 150ms ease-out, opacity 150ms ease-out;
+}
+
+.send-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(7, 193, 96, 0.25);
+}
+
+.send-btn:active {
+  transform: translateY(0);
+}
+
+.send-btn:focus-visible {
+  outline: 2px solid #07c160;
+  outline-offset: 2px;
+}
+
+.send-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.footer-hint {
+  text-align: center;
+  font-size: 11px;
+  color: #bbb;
+  margin: 6px 0 0 0;
+}
+
+/* ===== 响应式 ===== */
+@media (max-width: 640px) {
+  .chat-header {
+    height: 52px;
+    padding: 0 12px;
+  }
+
+  .bot-avatar,
+  .msg-avatar {
+    width: 36px;
+    height: 36px;
+  }
+
+  .avatar--bot {
+    font-size: 20px;
+  }
+
+  .header-title {
+    font-size: 15px;
+  }
+
+  .chat-body {
+    padding: 12px 8px;
+  }
+
+  .msg-row {
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .msg-bubble {
+    max-width: 75%;
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  .chat-footer {
+    padding: 10px 10px 6px;
+  }
+
+  .input-wrapper {
+    gap: 8px;
+  }
+}
+
+/* ===== Reduced Motion ===== */
+@media (prefers-reduced-motion: reduce) {
+  .msg-row,
+  .empty-state,
+  .streaming-dots,
+  .typing-dots span {
+    animation: none;
+  }
+
+  .quick-tag:hover,
+  .send-btn:hover {
+    transform: none;
+  }
+
+  .chat-body {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 </style>

@@ -38,7 +38,9 @@ class MyChat:
             [
                 (
                     "system",
-                    "请根据下面上下文回答问题。\n\nContext:\n{context}",
+                    "请根据下面上下文回答问题。\n"
+                    "使用 Markdown 格式输出，合理分段并使用列表、加粗等让结构清晰。\n\n"
+                    "Context:\n{context}",
                 ),
                 ("human", "{query}"),
             ]
@@ -64,6 +66,11 @@ class MyChat:
                     "system",
                     "你是一个专业的AI助手，请根据提供的上下文回答用户问题。"
                     "如果上下文中没有相关信息，请基于你的知识礼貌回答。\n\n"
+                    "回答要求：\n"
+                    "1. 使用 Markdown 格式输出，合理分段（段落之间用空行分隔）\n"
+                    "2. 要点较多时使用有序或无序列表\n"
+                    "3. 关键概念可以适当加粗强调\n"
+                    "4. 结构清晰，层次分明，避免大段连续文字\n\n"
                     "Context:\n{context}",
                 ),
                 MessagesPlaceholder(variable_name="history"),
