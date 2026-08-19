@@ -1,0 +1,24 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Vector DB & embeddings
+chroma_db/
+embeddings/
+
+# Node
+node_modules/
+chat-web/node_modules/
+chat-web/dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/

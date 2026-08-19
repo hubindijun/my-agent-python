@@ -1,0 +1,36 @@
+# ============================================
+# My RAG Project Dependencies
+# Environment: conda - mylearn
+# Python: 3.11
+# ============================================
+
+# ---------- Core Framework ----------
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0
+langchain-huggingface>=0.1.0
+langchain-chroma>=0.1.0
+langchain-text-splitters>=0.3.0
+
+# ---------- LLM & Embedding ----------
+openai>=1.40.0
+sentence-transformers>=3.0.0
+transformers>=4.40.0
+torch>=2.2.0
+
+# ---------- Vector Database ----------
+chromadb>=0.5.0
+
+# ---------- Web Server ----------
+fastapi>=0.115.0
+uvicorn>=0.30.0
+pydantic>=2.8.0
+pydantic-settings>=2.4.0
+
+# ---------- Utilities ----------
+python-dotenv>=1.0.0
+
+# ---------- Optional (Development) ----------
+# ipykernel>=6.29.0
+# jupyter>=1.0.0
+# pytest>=8.0.0
