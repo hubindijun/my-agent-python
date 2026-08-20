@@ -134,6 +134,10 @@
             {{ msg.content }}
             <span v-if="msg.streaming" class="streaming-dots" aria-hidden="true">/...</span>
           </template>
+          <div v-if="msg.isFallback" class="fallback-hint" role="note">
+            <span class="fallback-icon">⚠️</span>
+            {{ msg.fallbackMessage || 'AI 服务异常，已返回兜底回复' }}
+          </div>
         </div>
       </div>
     </main>
@@ -284,19 +288,36 @@ const sendMessage = async () => {
       buffer = lines.pop() || ''
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6)
-          if (data === '[DONE]') {
+        if (!line.startsWith('data: ')) continue
+        const raw = line.slice(6).trim()
+        if (!raw) continue
+
+        let evt
+        try {
+          evt = JSON.parse(raw)
+        } catch {
+          continue
+        }
+
+        switch (evt.type) {
+          case 'session':
+            if (evt.session_id) sessionId.value = evt.session_id
+            break
+          case 'text':
+            if (evt.content) {
+              botMsg.content += evt.content
+              await scrollToBottom()
+            }
+            break
+          case 'fallback':
+            botMsg.isFallback = true
+            botMsg.fallbackMessage = evt.message
+            break
+          case 'error':
+            throw new Error(evt.message || '服务异常')
+          case 'done':
             botMsg.streaming = false
-          } else if (data.startsWith('[ERROR]')) {
-            throw new Error(data.slice(7))
-          } else if (data.startsWith('[SESSION] ')) {
-            const sid = data.slice(10).trim()
-            if (sid) sessionId.value = sid
-          } else {
-            botMsg.content += data
-            await scrollToBottom()
-          }
+            break
         }
       }
     }
@@ -764,6 +785,23 @@ onMounted(() => {
   font-size: 11px;
   color: #bbb;
   margin: 6px 0 0 0;
+}
+
+.fallback-hint {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #fff7e6;
+  border: 1px solid #ffd591;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #d46b08;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fallback-icon {
+  font-size: 14px;
 }
 
 /* ===== 响应式 ===== */

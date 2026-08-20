@@ -1,14 +1,24 @@
+import json
+import logging
+import uuid
+
 from dotenv import load_dotenv
 load_dotenv()
 
-import uuid
 from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, field_validator
 
+from exceptions import RAGBaseException, ValidationError
 from my_rag import MyRag
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("app_server")
 
 app = FastAPI(title="My RAG Service")
 
@@ -22,13 +32,11 @@ app.add_middleware(
 
 rag = MyRag()
 
-# 内存中存储会话历史：{ session_id: [ {role, content}, ... ] }
 sessions = {}
-MAX_HISTORY_PER_SESSION = 20  # 每个会话最多保留 20 条（10 轮）
+MAX_HISTORY_PER_SESSION = 20
 
 
 def get_session_id(request: Request) -> str:
-    """从 header 中获取 session_id，没有则新建"""
     session_id = request.headers.get("X-Session-Id")
     if not session_id:
         session_id = str(uuid.uuid4())
@@ -40,7 +48,6 @@ def get_session_id(request: Request) -> str:
 def add_history(session_id: str, role: str, content: str):
     history = sessions[session_id]
     history.append({"role": role, "content": content})
-    # 超过上限时裁剪最旧的
     if len(history) > MAX_HISTORY_PER_SESSION:
         sessions[session_id] = history[-MAX_HISTORY_PER_SESSION:]
 
@@ -48,9 +55,60 @@ def add_history(session_id: str, role: str, content: str):
 class QueryRequest(BaseModel):
     query: str
 
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("query 不能为空")
+        return v.strip()
+
 
 class StreamRequest(BaseModel):
     query: str
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("query 不能为空")
+        return v.strip()
+
+
+def _sse_event(event_type: str, **kwargs) -> str:
+    payload = {"type": event_type, **kwargs}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@app.exception_handler(RAGBaseException)
+async def rag_exception_handler(request: Request, exc: RAGBaseException):
+    logger.error(f"[{exc.code}] {exc.message}" + (f" - {exc.detail}" if exc.detail else ""))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.to_dict()},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for err in exc.errors():
+        field = ".".join(str(loc) for loc in err["loc"]) if err["loc"] else "body"
+        errors.append(f"{field}: {err['msg']}")
+    detail = "; ".join(errors) if errors else "请求参数无效"
+    logger.warning(f"[VALIDATION_ERROR] {detail}")
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"code": "VALIDATION_ERROR", "message": "参数校验失败", "detail": detail}},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"[INTERNAL_ERROR] Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL_ERROR", "message": "服务内部错误"}},
+    )
 
 
 @app.get("/")
@@ -62,14 +120,16 @@ def index():
 def chat(request: QueryRequest, req: Request):
     session_id = get_session_id(req)
     add_history(session_id, "user", request.query)
-    answer = rag.query(request.query)
+    answer, is_fallback = rag.query(request.query)
     add_history(session_id, "assistant", answer)
-    return {"query": request.query, "answer": answer, "session_id": session_id}
+    response = {"query": request.query, "answer": answer, "session_id": session_id}
+    if is_fallback:
+        response["is_fallback"] = True
+    return response
 
 
 @app.get("/chat/history")
 def get_history(req: Request):
-    """获取当前会话的历史记录"""
     session_id = req.headers.get("X-Session-Id")
     if not session_id or session_id not in sessions:
         return {"history": [], "session_id": session_id or str(uuid.uuid4())}
@@ -78,7 +138,6 @@ def get_history(req: Request):
 
 @app.delete("/chat/history")
 def clear_history(req: Request):
-    """清空当前会话的历史记录"""
     session_id = req.headers.get("X-Session-Id")
     if session_id and session_id in sessions:
         sessions[session_id] = []
@@ -87,30 +146,37 @@ def clear_history(req: Request):
 
 @app.post("/chat/stream")
 async def chat_stream(request: StreamRequest, req: Request):
-    """流式对话接口（SSE），服务端维护会话历史"""
-
     session_id = get_session_id(req)
     add_history(session_id, "user", request.query)
 
-    # 取最近的历史（不含刚加的用户消息，stream 里会一起传）
     history = sessions[session_id][:-1]
 
     async def event_generator():
         full_answer = ""
+        is_fallback = False
         try:
-            # 先发 session_id，让前端知道
-            yield f"data: [SESSION] {session_id}\n\n"
+            yield _sse_event("session", session_id=session_id)
 
-            for chunk in rag.query_stream(request.query, history):
+            stream_iter, is_fallback = rag.query_stream(request.query, history)
+
+            for chunk in stream_iter:
                 if chunk:
                     full_answer += chunk
-                    yield f"data: {chunk}\n\n"
+                    yield _sse_event("text", content=chunk)
 
-            # 存到历史
             add_history(session_id, "assistant", full_answer)
-            yield "data: [DONE]\n\n"
+
+            if is_fallback:
+                yield _sse_event("fallback", message="AI 服务异常，已返回兜底回复")
+
+            yield _sse_event("done")
+
+        except RAGBaseException as e:
+            logger.error(f"[{e.code}] {e.message}" + (f" - {e.detail}" if e.detail else ""))
+            yield _sse_event("error", code=e.code, message=e.message)
         except Exception as e:
-            yield f"data: [ERROR] {str(e)}\n\n"
+            logger.exception(f"[INTERNAL_ERROR] stream error: {e}")
+            yield _sse_event("error", code="INTERNAL_ERROR", message="服务内部错误")
 
     return StreamingResponse(
         event_generator(),
