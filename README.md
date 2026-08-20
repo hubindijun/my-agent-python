@@ -279,6 +279,15 @@ MyRag.query_stream(question, history)
 
 ---
 
+## Todo List
+
+- [ ] **异常处理完善** — 覆盖 LLM 调用失败、向量库异常、网络超时等场景，统一错误码与错误响应格式
+- [ ] **重试降级处理** — LLM / Embedding 调用失败时自动重试，极端情况下降级为纯检索或兜底回答
+- [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
+- [ ] **工具调用** — 集成 Function Calling / Tools，支持查询数据库、调用外部 API 等扩展能力
+
+---
+
 ## 常见问题
 
 **Q: Embedding 模型下载很慢怎么办？**
