@@ -44,17 +44,31 @@
           </p>
         </div>
       </div>
-      <a-button
-        v-if="messages.length > 0"
-        type="text"
-        size="small"
-        class="clear-btn"
-        @click="clearHistory"
-        aria-label="清空聊天记录"
-      >
-        <template #icon><icon-delete :size="16" /></template>
-        清空记录
-      </a-button>
+      <div class="header-right">
+        <a-select
+          v-model="currentModel"
+          size="small"
+          class="model-select"
+          :disabled="isStreaming"
+          @change="onModelChange"
+          aria-label="选择模型"
+        >
+          <a-option v-for="m in modelOptions" :key="m.value" :value="m.value">
+            {{ m.label }}
+          </a-option>
+        </a-select>
+        <a-button
+          v-if="messages.length > 0"
+          type="text"
+          size="small"
+          class="clear-btn"
+          @click="clearHistory"
+          aria-label="清空聊天记录"
+        >
+          <template #icon><icon-delete :size="16" /></template>
+          清空记录
+        </a-button>
+      </div>
     </header>
 
     <main
@@ -179,9 +193,17 @@ import { IconDelete, IconSend } from '@arco-design/web-vue/es/icon'
 
 const STORAGE_KEY = 'rag_chat_session'
 const SESSION_KEY = 'rag_session_id'
+const STORAGE_MODEL_KEY = 'rag_chat_model'
+const DEFAULT_MODEL = 'deepseek-v4-flash'
+
+const modelOptions = [
+  { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+  { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+]
 
 const messages = ref([])
 const sessionId = ref('')
+const currentModel = ref(DEFAULT_MODEL)
 const inputText = ref('')
 const isStreaming = ref(false)
 const listRef = ref(null)
@@ -197,7 +219,11 @@ const loadFromStorage = () => {
   try {
     const saved = sessionStorage.getItem(STORAGE_KEY)
     const sid = sessionStorage.getItem(SESSION_KEY)
+    const savedModel = sessionStorage.getItem(STORAGE_MODEL_KEY)
     if (sid) sessionId.value = sid
+    if (savedModel && modelOptions.some(m => m.value === savedModel)) {
+      currentModel.value = savedModel
+    }
     if (saved) {
       messages.value = JSON.parse(saved)
     }
@@ -215,9 +241,14 @@ const saveToStorage = () => {
     if (sessionId.value) {
       sessionStorage.setItem(SESSION_KEY, sessionId.value)
     }
+    sessionStorage.setItem(STORAGE_MODEL_KEY, currentModel.value)
   } catch (e) {
     console.warn('保存历史记录失败', e)
   }
+}
+
+const onModelChange = () => {
+  saveToStorage()
 }
 
 watch(messages, () => {
@@ -260,7 +291,7 @@ const sendMessage = async () => {
     const response = await fetch('/chat/stream', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ query: text }),
+      body: JSON.stringify({ query: text, model: currentModel.value }),
     })
 
     if (!response.ok) {
@@ -354,6 +385,7 @@ const clearHistory = () => {
       sessionStorage.removeItem(STORAGE_KEY)
       sessionStorage.removeItem(SESSION_KEY)
       sessionId.value = ''
+      saveToStorage()
       try {
         await fetch('/chat/history', {
           method: 'DELETE',
@@ -443,6 +475,35 @@ onMounted(() => {
   border-radius: 50%;
   background-color: #07c160;
   box-shadow: 0 0 0 3px rgba(7, 193, 96, 0.18);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-select {
+  width: 180px;
+}
+
+.model-select :deep(.arco-select-view) {
+  background-color: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+}
+
+.model-select :deep(.arco-select-view:hover) {
+  border-color: #818cf8;
+  background-color: #e0e7ff;
+}
+
+.model-select :deep(.arco-select-view-input) {
+  color: #4338ca;
+}
+
+.model-select :deep(.arco-select-view-suffix-icon) {
+  color: #6366f1;
 }
 
 .clear-btn {
@@ -823,6 +884,11 @@ onMounted(() => {
 
   .header-title {
     font-size: 15px;
+  }
+
+  .model-select {
+    width: 120px;
+    font-size: 13px;
   }
 
   .chat-body {

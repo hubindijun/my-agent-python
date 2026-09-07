@@ -28,25 +28,20 @@ class MyChat:
 
     def __init__(self):
         api_key = os.getenv("OPENAI_API_KEY")
-        model = os.getenv("OPENAI_MODEL")
+        default_model = os.getenv("OPENAI_MODEL")
         base_url = os.getenv("OPENAI_API_BASE")
 
         if not api_key:
             raise LLMError("OPENAI_API_KEY 环境变量未配置")
-        if not model:
+        if not default_model:
             raise LLMError("OPENAI_MODEL 环境变量未配置")
         if not base_url:
             raise LLMError("OPENAI_API_BASE 环境变量未配置")
 
-        try:
-            self.llm = ChatOpenAI(
-                model=model,
-                api_key=api_key,
-                base_url=base_url,
-                streaming=True,
-            )
-        except Exception as e:
-            raise LLMError(f"LLM 客户端初始化失败: {e}") from e
+        self.api_key = api_key
+        self.base_url = base_url
+        self.default_model = default_model
+        self._llm_cache: dict[str, ChatOpenAI] = {}
 
         self.prompt = ChatPromptTemplate.from_messages(
             [
@@ -55,7 +50,19 @@ class MyChat:
             ]
         )
 
-        self.chain = self.prompt | self.llm | StrOutputParser()
+    def _get_llm(self, model: str | None = None) -> ChatOpenAI:
+        model_name = model or self.default_model
+        if model_name not in self._llm_cache:
+            try:
+                self._llm_cache[model_name] = ChatOpenAI(
+                    model=model_name,
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    streaming=True,
+                )
+            except Exception as e:
+                raise LLMError(f"LLM 客户端初始化失败 ({model_name}): {e}") from e
+        return self._llm_cache[model_name]
 
     @staticmethod
     def _wrap_llm_error(func):
@@ -65,11 +72,14 @@ class MyChat:
             raise _map_openai_error(e) from e
 
     @with_llm_retry()
-    def chat(self, query: str) -> str:
-        return self._wrap_llm_error(lambda: self.chain.invoke({"query": query}))
+    def chat(self, query: str, model: str | None = None) -> str:
+        llm = self._get_llm(model)
+        chain = self.prompt | llm | StrOutputParser()
+        return self._wrap_llm_error(lambda: chain.invoke({"query": query}))
 
     @with_llm_retry()
-    def rag_chat(self, query: str, context: str) -> str:
+    def rag_chat(self, query: str, context: str, model: str | None = None) -> str:
+        llm = self._get_llm(model)
         rag_prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -81,13 +91,15 @@ class MyChat:
                 ("human", "{query}"),
             ]
         )
-        chain = rag_prompt | self.llm | StrOutputParser()
+        chain = rag_prompt | llm | StrOutputParser()
         return self._wrap_llm_error(lambda: chain.invoke({"query": query, "context": context}))
 
     @with_llm_retry_stream()
-    def rag_chat_stream(self, query: str, context: str, history: list = None):
+    def rag_chat_stream(self, query: str, context: str, history: list = None, model: str | None = None):
         if history is None:
             history = []
+
+        llm = self._get_llm(model)
 
         history_messages = []
         for msg in history:
@@ -114,7 +126,7 @@ class MyChat:
             ]
         )
 
-        chain = rag_prompt | self.llm | StrOutputParser()
+        chain = rag_prompt | llm | StrOutputParser()
 
         def _stream():
             try:

@@ -14,6 +14,9 @@ from pydantic import BaseModel, field_validator
 from exceptions import RAGBaseException, ValidationError
 from my_rag import MyRag
 
+ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
+DEFAULT_MODEL = "deepseek-v4-flash"
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -32,7 +35,7 @@ app.add_middleware(
 
 rag = MyRag()
 
-sessions = {}
+sessions: dict[str, dict] = {}
 MAX_HISTORY_PER_SESSION = 20
 
 
@@ -41,19 +44,28 @@ def get_session_id(request: Request) -> str:
     if not session_id:
         session_id = str(uuid.uuid4())
     if session_id not in sessions:
-        sessions[session_id] = []
+        sessions[session_id] = {
+            "history": [],
+            "model": DEFAULT_MODEL,
+        }
     return session_id
 
 
 def add_history(session_id: str, role: str, content: str):
-    history = sessions[session_id]
+    history = sessions[session_id]["history"]
     history.append({"role": role, "content": content})
     if len(history) > MAX_HISTORY_PER_SESSION:
-        sessions[session_id] = history[-MAX_HISTORY_PER_SESSION:]
+        sessions[session_id]["history"] = history[-MAX_HISTORY_PER_SESSION:]
+
+
+def set_session_model(session_id: str, model: str | None):
+    if model and model in ALLOWED_MODELS:
+        sessions[session_id]["model"] = model
 
 
 class QueryRequest(BaseModel):
     query: str
+    model: str | None = None
 
     @field_validator("query")
     @classmethod
@@ -61,10 +73,20 @@ class QueryRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("query 不能为空")
         return v.strip()
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_allowed(cls, v):
+        if v is None:
+            return v
+        if v not in ALLOWED_MODELS:
+            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        return v
 
 
 class StreamRequest(BaseModel):
     query: str
+    model: str | None = None
 
     @field_validator("query")
     @classmethod
@@ -72,6 +94,15 @@ class StreamRequest(BaseModel):
         if not v or not v.strip():
             raise ValueError("query 不能为空")
         return v.strip()
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_allowed(cls, v):
+        if v is None:
+            return v
+        if v not in ALLOWED_MODELS:
+            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        return v
 
 
 def _sse_event(event_type: str, **kwargs) -> str:
@@ -119,10 +150,12 @@ def index():
 @app.post("/chat")
 def chat(request: QueryRequest, req: Request):
     session_id = get_session_id(req)
+    set_session_model(session_id, request.model)
+    model = sessions[session_id]["model"]
     add_history(session_id, "user", request.query)
-    answer, is_fallback = rag.query(request.query)
+    answer, is_fallback = rag.query(request.query, model=model)
     add_history(session_id, "assistant", answer)
-    response = {"query": request.query, "answer": answer, "session_id": session_id}
+    response = {"query": request.query, "answer": answer, "session_id": session_id, "model": model}
     if is_fallback:
         response["is_fallback"] = True
     return response
@@ -132,32 +165,38 @@ def chat(request: QueryRequest, req: Request):
 def get_history(req: Request):
     session_id = req.headers.get("X-Session-Id")
     if not session_id or session_id not in sessions:
-        return {"history": [], "session_id": session_id or str(uuid.uuid4())}
-    return {"history": sessions[session_id], "session_id": session_id}
+        return {"history": [], "session_id": session_id or str(uuid.uuid4()), "model": DEFAULT_MODEL}
+    return {
+        "history": sessions[session_id]["history"],
+        "session_id": session_id,
+        "model": sessions[session_id]["model"],
+    }
 
 
 @app.delete("/chat/history")
 def clear_history(req: Request):
     session_id = req.headers.get("X-Session-Id")
     if session_id and session_id in sessions:
-        sessions[session_id] = []
+        sessions[session_id]["history"] = []
     return {"ok": True}
 
 
 @app.post("/chat/stream")
 async def chat_stream(request: StreamRequest, req: Request):
     session_id = get_session_id(req)
+    set_session_model(session_id, request.model)
+    model = sessions[session_id]["model"]
     add_history(session_id, "user", request.query)
 
-    history = sessions[session_id][:-1]
+    history = sessions[session_id]["history"][:-1]
 
     async def event_generator():
         full_answer = ""
         is_fallback = False
         try:
-            yield _sse_event("session", session_id=session_id)
+            yield _sse_event("session", session_id=session_id, model=model)
 
-            stream_iter, is_fallback = rag.query_stream(request.query, history)
+            stream_iter, is_fallback = rag.query_stream(request.query, history, model=model)
 
             for chunk in stream_iter:
                 if chunk:

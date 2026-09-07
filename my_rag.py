@@ -54,18 +54,18 @@ class MyRag:
             raise RetrieverError(message="向量检索失败", detail=str(e)) from e
         return "\n".join([doc.page_content for doc in docs])
 
-    def query(self, question: str):
+    def query(self, question: str, model: str | None = None):
         context = self._retrieve(question)
 
         answer, is_fallback = with_fallback(
-            lambda: self.chat.rag_chat(query=question, context=context)
+            lambda: self.chat.rag_chat(query=question, context=context, model=model)
         )
         return answer, is_fallback
 
-    def query_stream(self, question: str, history: list = None):
+    def query_stream(self, question: str, history: list = None, model: str | None = None):
         context = self._retrieve(question)
 
         stream_iter, is_fallback = with_fallback_stream(
-            lambda: self.chat.rag_chat_stream(query=question, context=context, history=history)
+            lambda: self.chat.rag_chat_stream(query=question, context=context, history=history, model=model)
         )
         return stream_iter, is_fallback

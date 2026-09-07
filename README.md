@@ -8,9 +8,11 @@
 - ChromaDB 持久化存储和检索向量数据
 - Retriever 根据用户问题召回相关上下文
 - 调用大语言模型（DeepSeek / OpenAI 兼容 API）生成最终回答
+- **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定
 - 流式输出（SSE），支持逐字渲染
 - 多轮对话记忆（服务端 session + 前端 sessionStorage）
 - Vue3 + Arco Design + Tailwind 聊天前端界面（微信风格）
+- 分层异常体系 + 指数退避重试 + 优雅降级兜底
 
 ---
 
@@ -65,7 +67,7 @@ my/
 | LLM 框架 | LangChain | 编排 RAG 流程、Prompt 管理 |
 | 嵌入模型 | BAAI/bge-small-zh-v1.5 | 中文 Embedding 模型，本地运行 |
 | 向量数据库 | ChromaDB | 轻量级本地向量存储 |
-| 大语言模型 | DeepSeek API | 生成回答（OpenAI 兼容，可替换） |
+| 大语言模型 | DeepSeek V4 (Flash / Pro) | 支持前端动态切换，OpenAI 兼容接口 |
 | Web 框架 | FastAPI | 高性能异步 HTTP 服务 |
 | 前端框架 | Vue 3 + Vite | 聊天界面 |
 | UI 组件库 | Arco Design Vue | 基础组件 |
@@ -169,26 +171,47 @@ npm run dev
 
 一次性 RAG 问答。
 
-**请求体：** `{ "query": "你的问题" }`
+**请求体：**
 
-**响应：** `{ "query": "...", "answer": "...", "session_id": "..." }`
+```json
+{
+  "query": "你的问题",
+  "model": "deepseek-v4-flash"
+}
+```
+
+- `query`（必填）：用户问题
+- `model`（可选）：模型名称，可选 `deepseek-v4-flash` / `deepseek-v4-pro`，不传则使用会话当前模型或默认值
+
+**响应：** `{ "query": "...", "answer": "...", "session_id": "...", "model": "...", "is_fallback?": true }`
 
 ### `POST /chat/stream`
 
-流式对话（SSE）。支持多轮记忆。
+流式对话（SSE）。支持多轮记忆，支持动态选择模型。
 
 **请求头：** `X-Session-Id`（可选，用于续接会话；不传则新建）
 
-**请求体：** `{ "query": "你的问题" }`
+**请求体：**
 
-**响应：** `text/event-stream`，事件格式：
+```json
+{
+  "query": "你的问题",
+  "model": "deepseek-v4-flash"
+}
+```
 
-```
-data: [SESSION] <session_id>   # 第一条消息，返回会话 ID
-data: <chunk>                   # 文本片段（多次）
-data: [DONE]                    # 结束
-data: [ERROR] <message>         # 出错
-```
+- `query`（必填）：用户问题
+- `model`（可选）：模型名称，可选 `deepseek-v4-flash` / `deepseek-v4-pro`，不传则使用会话当前模型或默认值
+
+**响应：** `text/event-stream`，JSON 结构化事件（`data: {...}\n\n` 格式）：
+
+| 类型 | 字段 | 说明 |
+|------|------|------|
+| `session` | `session_id`, `model` | 第一条消息，返回会话 ID 和当前模型 |
+| `text` | `content` | 文本片段（多次） |
+| `fallback` | `message` | LLM 调用失败，已返回兜底回复 |
+| `error` | `code`, `message` | 不可恢复错误 |
+| `done` | — | 流式结束 |
 
 ### `GET /chat/history`
 
@@ -205,6 +228,7 @@ data: [ERROR] <message>         # 出错
 ### 功能特性
 
 - 🎨 微信风格聊天界面
+- 🤖 模型切换 — 顶部下拉可选 DeepSeek V4 Flash / Pro，会话级绑定
 - ⚡ 流式输出，逐字渲染 + 光标闪烁效果
 - 💾 会话历史保存在 `sessionStorage`（刷新保留，关闭浏览器丢失）
 - 🏷️ 快捷问题标签，点击即问
@@ -214,9 +238,10 @@ data: [ERROR] <message>         # 出错
 ### 会话机制
 
 - 前端通过 `X-Session-Id` header 与后端会话绑定
-- `session_id` 和消息记录存储在 `sessionStorage` 中
-- 后端会话存储在内存中，重启后端服务会丢失所有会话
+- `session_id`、消息记录、**当前选择的模型**都存储在 `sessionStorage` 中
+- 后端会话存储在内存中，结构为 `{ history: [...], model: "deepseek-v4-flash" }`，重启后端服务会丢失所有会话
 - 每个会话最多保留 20 条消息（10 轮对话）
+- 模型选择与会话绑定，切换后当前会话后续消息使用新模型
 
 ---
 
@@ -224,27 +249,50 @@ data: [ERROR] <message>         # 出错
 
 ### app_server.py
 
-FastAPI HTTP 服务入口。接收 HTTP 请求，调用 MyRag 服务处理业务逻辑，返回 JSON 或 SSE 流式结果。使用内存字典维护多会话。
+FastAPI HTTP 服务入口。接收 HTTP 请求，调用 MyRag 服务处理业务逻辑，返回 JSON 或 SSE 流式结果。
+
+- 使用内存字典维护多会话，结构：`{ session_id: { history: [...], model: "deepseek-v4-flash" } }`
+- 支持请求体传 `model` 参数动态切换模型（可选 `deepseek-v4-flash` / `deepseek-v4-pro`）
+- 三层全局异常处理器：RAGBaseException / 校验异常 / 兜底异常
+- SSE 事件为 JSON 结构化格式（`session` / `text` / `fallback` / `error` / `done`）
 
 ### my_rag.py
 
 RAG 核心服务。主要流程：
-1. 接收用户 query
+1. 接收用户 query + model
 2. 从 ChromaDB 中检索相似文档（Top-K=2）
 3. 将检索到的文档拼接为 context
-4. 调用 MyChat 将 query + context + history 传入 LLM 生成回答
+4. 调用 MyChat 将 query + context + history + model 传入 LLM 生成回答
+5. LLM 调用外层包裹 fallback 兜底，失败时返回友好提示
 
-提供 `query()`（一次性）和 `query_stream()`（流式）两个方法。
+提供 `query()`（一次性）和 `query_stream()`（流式）两个方法，均返回 `(answer, is_fallback)` 元组。
 
 ### my_chat.py
 
-大语言模型封装模块。
+大语言模型封装模块。支持多模型动态切换，按模型名缓存 `ChatOpenAI` 实例。
 
-- `chat()` — 普通对话
-- `rag_chat(query, context)` — RAG 对话（一次性）
-- `rag_chat_stream(query, context, history)` — RAG 对话（流式，支持多轮历史）
+- `chat(query, model?)` — 普通对话
+- `rag_chat(query, context, model?)` — RAG 对话（一次性）
+- `rag_chat_stream(query, context, history, model?)` — RAG 对话（流式，支持多轮历史）
 
 均使用 LCEL 链式调用：`prompt | llm | StrOutputParser`。
+所有 LLM 调用使用指数退避重试装饰器（3次），鉴权错误不重试。
+OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
+
+### exceptions.py
+
+分层异常体系。根类 `RAGBaseException`（含 code / message / status_code / detail）。
+
+- LLM 类：`LLMError` → `LLMAuthError` / `LLMRateLimitError` / `LLMServerError` / `LLMTimeoutError` / `LLMConnectionError`
+- 检索类：`RetrieverError` → `VectorStoreInitError` / `EmbeddingModelError`
+- 其他：`ValidationError` / `SessionError`
+
+### retry_utils.py
+
+重试与降级工具。
+
+- `with_llm_retry` / `with_llm_retry_stream`：指数退避重试（3次，抖动），可重试错误：限流 / 服务端 / 超时 / 连接
+- `with_fallback` / `with_fallback_stream`：捕获 `LLMError` 返回兜底文案
 
 ### pre_load_rag_index.py
 
@@ -255,26 +303,28 @@ RAG 核心服务。主要流程：
 ## 项目调用链路
 
 ```
-用户输入
+用户输入 + 模型选择
    │
    ▼
-Vue3 前端 (App.vue)
-   │  fetch SSE
+Vue3 前端 (App.vue)  ← sessionStorage（消息 + session_id + model）
+   │  fetch SSE  POST { query, model }
    ▼
 Vite 代理 /chat → localhost:8000
    │
    ▼
-FastAPI (app_server.py)  ← sessions 内存存储
+FastAPI (app_server.py)  ← sessions: { sid: { history, model } }
    │
    ▼
-MyRag.query_stream(question, history)
+MyRag.query_stream(question, history, model)
    │
    ├─ Retriever (Top-K=2)
    │     └─ ChromaDB + BAAI/bge-small-zh-v1.5
    │
-   └─ MyChat.rag_chat_stream()
-           └─ ChatOpenAI (DeepSeek API)
-                └─ 流式返回
+   └─ with_fallback → with_llm_retry (3次指数退避)
+           │
+           └─ MyChat.rag_chat_stream()
+                   └─ ChatOpenAI（按模型名缓存实例）
+                         └─ 流式返回
 ```
 
 ---
@@ -283,6 +333,7 @@ MyRag.query_stream(question, history)
 
 - [x] **异常处理完善** — 分层异常体系、统一错误码、全局异常处理器、SSE 结构化错误
 - [x] **重试降级处理** — LLM 调用指数退避重试（可重试错误 3 次），失败返回兜底文案
+- [x] **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定，后端按模型名缓存实例
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
 - [ ] **工具调用** — 集成 Function Calling / Tools，支持查询数据库、调用外部 API 等扩展能力
 
