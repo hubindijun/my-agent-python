@@ -34,9 +34,14 @@
 
 ```
 my/
-├── app_server.py              # FastAPI 服务入口
-├── my_rag.py                  # RAG 核心业务逻辑
-├── my_chat.py                 # 大语言模型封装
+├── app_server.py              # FastAPI 服务入口（普通聊天 + Agent 接口）
+├── my_rag.py                  # RAG 核心业务逻辑（ChromaDB 检索）
+├── my_chat.py                 # 普通聊天 LLM 封装（带重试 + 兜底）
+├── my_agent.py                # LangGraph Agent（RAG 节点 + ReAct 工具循环）
+├── agent_tools.py             # Agent 自定义工具注册辅助
+├── rag_utils.py               # RAG 工具类（HybridReranker 混合重排）
+├── exceptions.py              # 分层异常体系
+├── retry_utils.py             # LLM 调用重试 + 兜底装饰器
 ├── pre_load_rag_index.py      # 向量数据库初始化脚本
 ├── main.py                    # 命令行测试入口
 │
@@ -45,17 +50,19 @@ my/
 │
 ├── chat-web/                  # Vue3 前端
 │   ├── src/
-│   │   ├── App.vue            # 聊天页面主组件
+│   │   ├── App.vue            # 普通聊天页面主组件
 │   │   ├── main.js
 │   │   └── style.css
-│   ├── index.html
+│   ├── index.html             # 普通聊天入口
+│   ├── agentIndex.html        # Agent 聊天入口
 │   ├── vite.config.js         # Vite 配置 + 代理
 │   ├── tailwind.config.js
 │   └── package.json
 │
 ├── .env                       # 环境变量配置
 ├── requirements.txt           # Python 依赖清单
-└── README.md                  # 项目说明文档
+├── README.md                  # 项目说明文档
+└── README_EN.md               # English documentation
 ```
 
 ---

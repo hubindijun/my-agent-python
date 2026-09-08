@@ -35,12 +35,14 @@ Features:
 
 ```
 my/
-├── app_server.py              # FastAPI server entry point
-├── my_rag.py                  # RAG core business logic
-├── my_chat.py                 # LLM wrapper
-├── my_agent.py                # LangGraph Agent
-├── agent_tools.py             # Agent tool utilities
-├── rag_utils.py               # Hybrid reranking utilities
+├── app_server.py              # FastAPI server entry (regular chat + Agent endpoints)
+├── my_rag.py                  # RAG core logic (ChromaDB retrieval)
+├── my_chat.py                 # Regular chat LLM wrapper (with retry + fallback)
+├── my_agent.py                # LangGraph Agent (RAG node + ReAct tool loop)
+├── agent_tools.py             # Agent custom tool registration helpers
+├── rag_utils.py               # RAG utilities (HybridReranker)
+├── exceptions.py              # Hierarchical exception system
+├── retry_utils.py             # LLM retry + fallback decorators
 ├── pre_load_rag_index.py      # Vector DB initialization script
 ├── main.py                    # CLI test entry point
 │
@@ -52,14 +54,16 @@ my/
 │   │   ├── App.vue            # Main chat page component
 │   │   ├── main.js
 │   │   └── style.css
-│   ├── index.html
+│   ├── index.html             # Regular chat entry
+│   ├── agentIndex.html        # Agent chat entry
 │   ├── vite.config.js         # Vite config + proxy
 │   ├── tailwind.config.js
 │   └── package.json
 │
 ├── .env                       # Environment variables
 ├── requirements.txt           # Python dependencies
-└── README.md                  # Documentation (Chinese)
+├── README.md                  # Documentation (Chinese)
+└── README_EN.md               # Documentation (English)
 ```
 
 ---
