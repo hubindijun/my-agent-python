@@ -223,6 +223,49 @@ npm run dev
 
 ---
 
+### `POST /agent/chat`
+
+Agent 非流式对话。基于 LangGraph，内置 RAG 检索节点 + ReAct 工具循环。
+
+**请求头：** `X-Session-Id`（可选）
+
+**请求体：**
+
+```json
+{
+  "query": "你的问题",
+  "model": "deepseek-v4-flash"
+}
+```
+
+**响应：** `{ "query": "...", "answer": "...", "session_id": "...", "model": "...", "tool_calls?": [...], "is_fallback?": true }`
+
+### `POST /agent/chat/stream`
+
+Agent 流式对话（SSE）。事件格式与 `/chat/stream` 对齐，额外支持 `tool_call` / `tool_result` 事件（前端可忽略）。
+
+**事件类型：**
+
+| 类型 | 字段 | 说明 |
+|------|------|------|
+| `session` | `session_id`, `model` | 第一条消息 |
+| `text` | `content` | 文本片段（多次） |
+| `tool_call` | `name`, `args` | Agent 调用工具（新增） |
+| `tool_result` | `name`, `content` | 工具执行结果（新增） |
+| `fallback` | `message` | LLM 失败，已兜底 |
+| `error` | `code`, `message` | 不可恢复错误 |
+| `done` | — | 流式结束 |
+
+### `GET /agent/chat/history`
+
+获取 Agent 会话历史（含工具消息）。需要 `X-Session-Id`。
+
+### `DELETE /agent/chat/history`
+
+清空 Agent 会话历史。需要 `X-Session-Id`。
+
+---
+
 ## 前端说明
 
 ### 功能特性
@@ -294,6 +337,28 @@ OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 - `with_llm_retry` / `with_llm_retry_stream`：指数退避重试（3次，抖动），可重试错误：限流 / 服务端 / 超时 / 连接
 - `with_fallback` / `with_fallback_stream`：捕获 `LLMError` 返回兜底文案
 
+### my_agent.py
+
+基于 LangGraph 的智能体。**完全独立于 MyChat**，自有 LLM 实例，便于后续演化（子 agent、多模型、复杂图结构）。
+
+图结构：`START → retrieve (RAG) → agent (LLM+tools) ↔ tools → END`
+
+- RAG 是图的第一个固定节点（不是 tool），每次必检索
+- 复用 `retry_utils` 重试降级 + `exceptions` 异常体系
+- MemorySaver 持久化会话，`thread_id` 即 `session_id`
+- 提供 `chat()` / `chat_stream()` / `get_history()` / `clear_history()`
+- 支持通过 `extra_tools` 参数绑定自定义 LangChain Tools
+
+### rag_utils.py
+
+混合重排工具类 `HybridReranker`。与向量库无关，输入为通用 `list[tuple[Document, float]]`。
+
+支持两种融合策略：
+- **weighted**：min-max 归一化后按权重加权求和（默认）
+- **rrf**：Reciprocal Rank Fusion，基于排名倒数，不依赖分数绝对值
+
+当前未集成到 MyRag 中，留待后续混合检索使用。
+
 ### pre_load_rag_index.py
 
 向量数据库初始化脚本。使用 `RecursiveCharacterTextSplitter`（中文分隔符，chunk_size=200，overlap=20）分割文档并写入 ChromaDB。
@@ -301,6 +366,8 @@ OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 ---
 
 ## 项目调用链路
+
+### 普通 RAG 聊天（/chat/stream）
 
 ```
 用户输入 + 模型选择
@@ -325,6 +392,35 @@ MyRag.query_stream(question, history, model)
            └─ MyChat.rag_chat_stream()
                    └─ ChatOpenAI（按模型名缓存实例）
                          └─ 流式返回
+```
+
+### Agent 聊天（/agent/chat/stream）
+
+```
+用户输入 + 模型选择
+   │
+   ▼
+Vue3 前端（Agent 页面） ← sessionStorage（消息 + session_id + model）
+   │  fetch SSE  POST { query, model }
+   ▼
+Vite 代理 /agent/chat → localhost:8000
+   │
+   ▼
+FastAPI (app_server.py)  ← agent_sessions: { sid: { model } }
+   │
+   ▼
+MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
+   │
+   ├─ ① retrieve 节点
+   │     └─ 调用 MyRag._retrieve() → ChromaDB
+   │
+   ├─ ② agent 节点
+   │     └─ 自有 ChatOpenAI + bind_tools
+   │         └─ with_llm_retry (3次指数退避)
+   │
+   └─ ③ tools 节点（有 tool_calls 时循环）
+         └─ ToolNode（执行自定义工具）
+              └─ 回到 agent 节点
 ```
 
 ---

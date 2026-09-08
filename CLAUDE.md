@@ -6,6 +6,8 @@
 
 一个中文 RAG（检索增强生成）聊天服务，前端为 Vue3。后端使用 LangChain + 本地 Embedding 模型（BAAI/bge-small-zh-v1.5）+ ChromaDB + FastAPI。LLM 使用 OpenAI 兼容接口（默认配置为 DeepSeek，可替换）。包含分层异常体系、LLM 调用指数退避重试、以及 LLM 不可用时的优雅降级兜底。
 
+现已新增 LangGraph Agent：基于 LangGraph StateGraph 的智能体，内置 RAG 检索节点 + ReAct 工具循环，支持自定义 Tools，独立于普通 RAG 聊天。
+
 ## 常用命令
 
 ### 后端（Python）
@@ -53,11 +55,16 @@ npm run preview   # 预览生产构建
 ```
 HTTP 请求 → app_server.py (FastAPI)
               ├─ 全局异常处理器（RAGBaseException / 校验异常 / 兜底）
-              └─ MyRag.query() / query_stream()
-                   ├─ Retriever (ChromaDB + HuggingFace embeddings, top-k=2)
-                   └─ with_fallback / with_fallback_stream
-                         └─ with_llm_retry / with_llm_retry_stream（3次指数退避重试）
-                              └─ MyChat.rag_chat() / rag_chat_stream() → ChatOpenAI + StrOutputParser
+              ├─ /chat*       → MyRag.query() / query_stream()
+              │                    ├─ Retriever (ChromaDB + HuggingFace embeddings, top-k=2)
+              │                    └─ with_fallback / with_fallback_stream
+              │                         └─ with_llm_retry / with_llm_retry_stream
+              │                              └─ MyChat.rag_chat() → ChatOpenAI + StrOutputParser
+              └─ /agent/chat* → MyAgent
+                                   ├─ LangGraph StateGraph
+                                   │    START → retrieve (RAG) → agent (LLM+tools) ↔ tools → END
+                                   ├─ MemorySaver 持久化会话
+                                   └─ 自有 LLM 实例（独立于 MyChat，便于演化）
 ```
 
 ### 前端
@@ -67,43 +74,55 @@ Vue3 (App.vue) → fetch SSE /chat/stream → Vite 开发代理 → FastAPI 后�
   Arco Design Vue 组件库
   Tailwind CSS 原子化样式
   sessionStorage 存储消息和 session_id
+
+Agent 模式：独立入口页面，调 /agent/chat/stream，忽略 tool_call/tool_result 事件，渲染体验与普通聊天一致
 ```
 
 ### 核心模块
 
-- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 单例。三层全局异常处理器（RAGBaseException → 结构化 JSON 错误；RequestValidationError → 400；兜底 → 500）。接口：
+- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 和 `MyAgent` 单例。三层全局异常处理器。接口：
   - `GET /` — 健康检查
-  - `POST /chat` — 一次性 RAG 问答，请求体 `{query: str}`，返回 `{query, answer, session_id, is_fallback?}`
-  - `POST /chat/stream` — 流式 RAG（SSE，JSON 结构化事件）。会话通过 `X-Session-Id` 请求头标识。
-  - `GET /chat/history` — 获取当前会话历史
-  - `DELETE /chat/history` — 清空当前会话历史
-- **`my_rag.py`** — `MyRag` 类。加载持久化的 Chroma 向量库，创建 retriever（top-k=2）。`query()` 和 `query_stream()` 均返回 `(结果, is_fallback)` 元组。LLM 调用外层包裹 `with_fallback` / `with_fallback_stream`。
-- **`my_chat.py`** — `MyChat` 类。封装 `ChatOpenAI`（启用流式）。方法使用 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。通过 `_map_openai_error()` 将 OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
-- **`exceptions.py`** — 异常体系，根类 `RAGBaseException`。包含 `code`、`message`、`status_code` 和可选的 `detail`。子类：
+  - `POST /chat` — 一次性 RAG 问答
+  - `POST /chat/stream` — 流式 RAG（SSE）
+  - `GET /chat/history` / `DELETE /chat/history` — 普通聊天会话历史
+  - `POST /agent/chat` — Agent 非流式对话，返回含 `tool_calls` 摘要
+  - `POST /agent/chat/stream` — Agent 流式对话（SSE，含 tool_call/tool_result 事件）
+  - `GET /agent/chat/history` / `DELETE /agent/chat/history` — Agent 会话历史
+- **`my_rag.py`** — `MyRag` 类。加载 Chroma 向量库，retriever top-k=2。`query()` / `query_stream()` 返回 `(结果, is_fallback)`。LLM 调用外层包 `with_fallback`。
+- **`my_chat.py`** — `MyChat` 类。封装 `ChatOpenAI`（流式）。方法带 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。`_map_openai_error()` 映射 OpenAI 异常到自定义 `LLMError` 子类。
+- **`my_agent.py`** — `MyAgent` 类。LangGraph StateGraph：retrieve 节点（调用 MyRag._retrieve）+ agent 节点（自有 LLM + tools）+ ToolNode。MemorySaver 做 checkpoint。支持 `chat()` / `chat_stream()` / `get_history()` / `clear_history()`。完全独立于 MyChat，自有 LLM 实例，便于后续演化（子 agent、多模型、复杂图结构）。
+- **`agent_tools.py`** — Agent 工具注册辅助。RAG 是内置节点不是 tool，tool 槽位留给业务自定义。
+- **`rag_utils.py`** — `HybridReranker` 混合重排工具类。支持 weighted（加权分数融合）和 rrf（Reciprocal Rank Fusion）两种策略。与向量库无关，输入 `list[tuple[Document, float]]`。
+- **`exceptions.py`** — 异常体系，根类 `RAGBaseException`。子类：
   - `LLMError`（502）→ `LLMAuthError`、`LLMRateLimitError`（503）、`LLMServerError`、`LLMTimeoutError`（504）、`LLMConnectionError`
   - `RetrieverError`（500）→ `VectorStoreInitError`、`EmbeddingModelError`
+  - `AgentError`（500）
   - `ValidationError`（400）、`SessionError`（400）
-- **`retry_utils.py`** — 重试和兜底装饰器。`RETRYABLE_ERRORS` = 限流 / 服务端 / 超时 / 连接错误（鉴权错误不重试）。指数退避加抖动，默认 3 次。`with_fallback` 捕获任意 `LLMError`，返回静态兜底文案（`"抱歉，AI 服务暂时繁忙，请稍后再试。"`）并置 `is_fallback=True`。
-- **`pre_load_rag_index.py`** — `RagIndexer` 类 + 独立脚本。使用 `RecursiveCharacterTextSplitter` 切分硬编码的 `documents` 列表（中文感知分隔符，chunk_size=200，overlap=20），写入 ChromaDB。
+- **`retry_utils.py`** — 重试和兜底装饰器。`RETRYABLE_ERRORS` = 限流 / 服务端 / 超时 / 连接错误（鉴权错误不重试）。指数退避加抖动，默认 3 次。`with_fallback` 捕获任意 `LLMError` 返回静态兜底文案。
+- **`pre_load_rag_index.py`** — `RagIndexer` 类 + 独立脚本。RecursiveCharacterTextSplitter（chunk_size=200，overlap=20）切分 documents，写入 ChromaDB。
 
 ### SSE 事件格式
 
-`/chat/stream` 端点以 `data: {...}\n\n` 格式发送 JSON 结构化事件：
+`/chat/stream` 和 `/agent/chat/stream` 均以 `data: {...}\n\n` 格式发送 JSON 结构化事件：
 
-| 类型         | 字段                             | 含义                         |
-|-------------|----------------------------------|------------------------------|
-| `session`   | `session_id`                     | 第一条消息，返回会话 ID       |
-| `text`      | `content`                        | 文本片段（多次事件）          |
-| `fallback`  | `message`                        | LLM 调用失败，已使用兜底回复  |
-| `error`     | `code`, `message`                | 不可恢复错误                 |
-| `done`      | —                                | 流式结束                     |
+| 类型         | 字段                             | 含义                         | 适用端点 |
+|-------------|----------------------------------|------------------------------|----------|
+| `session`   | `session_id`, `model`            | 第一条消息，返回会话 ID 和模型 | 两者都有 |
+| `text`      | `content`                        | 文本片段（多次事件）          | 两者都有 |
+| `fallback`  | `message`                        | LLM 调用失败，已使用兜底回复  | 两者都有 |
+| `error`     | `code`, `message`                | 不可恢复错误                 | 两者都有 |
+| `done`      | —                                | 流式结束                     | 两者都有 |
+| `tool_call` | `name`, `args`                   | Agent 即将调用工具           | 仅 agent |
+| `tool_result` | `name`, `content`               | 工具执行完成                 | 仅 agent |
 
-前端通过对每个 `data:` 行做 `JSON.parse()` 来解析。
+前端通过对每个 `data:` 行做 `JSON.parse()` 来解析。Agent 模式下前端可忽略 tool_call/tool_result 事件。
 
 ### 会话管理
 
-- 后端用内存字典保存会话（`sessions: { session_id: [messages] }`），每个会话最多 20 条消息。
-- 前端将 `session_id` 和显示的消息存在 `sessionStorage`（不是 `localStorage`）——刷新页面保留，关闭浏览器丢失。
+- **普通聊天**：后端内存字典 `sessions: { session_id: { history, model } }`，每会话最多 20 条消息。
+- **Agent 聊天**：后端内存字典 `agent_sessions: { session_id: { model } }` 存元数据；消息由 LangGraph MemorySaver 持久化，以 `thread_id = session_id` 为 key。
+- 两套会话完全隔离，互不污染。
+- 前端存储在 `sessionStorage`（刷新保留，关闭浏览器丢失）。
 - 无持久化存储；重启后端会丢失所有会话。
 
 ### 已知状态 / 注意事项
@@ -113,3 +132,5 @@ Vue3 (App.vue) → fetch SSE /chat/stream → Vite 开发代理 → FastAPI 后�
 - 知识库内容硬编码在 `pre_load_rag_index.py` 的 `__main__` 块中。修改 `documents` 列表后重新运行脚本即可更新。
 - 没有测试套件。`pytest` 在 `requirements.txt` 中是注释掉的可选依赖。
 - 前端使用 `fetch()` + `ReadableStream` 读取 SSE（不是 `EventSource`）——因为 SSE POST 需要请求体和 `X-Session-Id` 等自定义请求头。
+- MyAgent 自有 LLM 实例，不依赖 MyChat，便于后续扩展子 agent、多模型、复杂图结构。
+- HybridReranker 已实现但尚未集成到 MyRag 或 MyAgent 中，留待后续混合检索使用。
