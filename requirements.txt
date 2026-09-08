@@ -11,6 +11,7 @@ langchain-openai>=0.2.0
 langchain-huggingface>=0.1.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.3.0
+langgraph>=0.2.0
 
 # ---------- LLM & Embedding ----------
 openai>=1.40.0

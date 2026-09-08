@@ -11,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
-from exceptions import RAGBaseException, ValidationError
+from exceptions import RAGBaseException, ValidationError, AgentError
 from my_rag import MyRag
+from my_agent import MyAgent
 
 ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -34,8 +35,10 @@ app.add_middleware(
 )
 
 rag = MyRag()
+agent = MyAgent(rag)
 
 sessions: dict[str, dict] = {}
+agent_sessions: dict[str, dict] = {}
 MAX_HISTORY_PER_SESSION = 20
 
 
@@ -215,6 +218,160 @@ async def chat_stream(request: StreamRequest, req: Request):
             yield _sse_event("error", code=e.code, message=e.message)
         except Exception as e:
             logger.exception(f"[INTERNAL_ERROR] stream error: {e}")
+            yield _sse_event("error", code="INTERNAL_ERROR", message="服务内部错误")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "X-Session-Id": session_id,
+        },
+    )
+
+
+# ==============================
+# Agent Endpoints
+# ==============================
+
+def _get_agent_session_id(request: Request) -> str:
+    session_id = request.headers.get("X-Session-Id")
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    if session_id not in agent_sessions:
+        agent_sessions[session_id] = {
+            "model": DEFAULT_MODEL,
+        }
+    return session_id
+
+
+def _set_agent_session_model(session_id: str, model: str | None):
+    if model and model in ALLOWED_MODELS:
+        agent_sessions[session_id]["model"] = model
+
+
+class AgentQueryRequest(BaseModel):
+    query: str
+    model: str | None = None
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("query 不能为空")
+        return v.strip()
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_allowed(cls, v):
+        if v is None:
+            return v
+        if v not in ALLOWED_MODELS:
+            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        return v
+
+
+class AgentStreamRequest(BaseModel):
+    query: str
+    model: str | None = None
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("query 不能为空")
+        return v.strip()
+
+    @field_validator("model")
+    @classmethod
+    def model_must_be_allowed(cls, v):
+        if v is None:
+            return v
+        if v not in ALLOWED_MODELS:
+            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        return v
+
+
+@app.post("/agent/chat")
+def agent_chat(request: AgentQueryRequest, req: Request):
+    session_id = _get_agent_session_id(req)
+    _set_agent_session_model(session_id, request.model)
+    model = agent_sessions[session_id]["model"]
+
+    answer, is_fallback = agent.chat(request.query, thread_id=session_id, model=model)
+
+    history = agent.get_history(session_id)
+    tool_calls = []
+    for msg in reversed(history):
+        if msg["role"] == "assistant" and msg.get("tool_calls"):
+            tool_calls = msg["tool_calls"]
+            break
+
+    response = {
+        "query": request.query,
+        "answer": answer,
+        "session_id": session_id,
+        "model": model,
+    }
+    if tool_calls:
+        response["tool_calls"] = tool_calls
+    if is_fallback:
+        response["is_fallback"] = True
+    return response
+
+
+@app.get("/agent/chat/history")
+def get_agent_history(req: Request):
+    session_id = req.headers.get("X-Session-Id")
+    if not session_id or session_id not in agent_sessions:
+        return {"history": [], "session_id": session_id or str(uuid.uuid4()), "model": DEFAULT_MODEL}
+    history = agent.get_history(session_id)
+    return {
+        "history": history,
+        "session_id": session_id,
+        "model": agent_sessions[session_id]["model"],
+    }
+
+
+@app.delete("/agent/chat/history")
+def clear_agent_history(req: Request):
+    session_id = req.headers.get("X-Session-Id")
+    if session_id and session_id in agent_sessions:
+        agent.clear_history(session_id)
+    return {"ok": True}
+
+
+@app.post("/agent/chat/stream")
+async def agent_chat_stream(request: AgentStreamRequest, req: Request):
+    session_id = _get_agent_session_id(req)
+    _set_agent_session_model(session_id, request.model)
+    model = agent_sessions[session_id]["model"]
+
+    async def event_generator():
+        try:
+            yield _sse_event("session", session_id=session_id, model=model)
+
+            stream_iter = agent.chat_stream(request.query, thread_id=session_id, model=model)
+
+            for event in stream_iter:
+                event_type = event.get("type", "")
+                if event_type == "text":
+                    yield _sse_event("text", content=event["content"])
+                elif event_type == "tool_call":
+                    yield _sse_event("tool_call", name=event.get("name", ""), args=event.get("args", {}))
+                elif event_type == "tool_result":
+                    yield _sse_event("tool_result", name=event.get("name", ""), content=event.get("content", ""))
+                elif event_type == "fallback":
+                    yield _sse_event("fallback", message=event.get("message", ""))
+                elif event_type == "error":
+                    yield _sse_event("error", code=event.get("code", "AGENT_ERROR"), message=event.get("message", "Agent 执行异常"))
+                elif event_type == "done":
+                    yield _sse_event("done")
+
+        except Exception as e:
+            logger.exception(f"[AGENT_ERROR] stream error: {e}")
             yield _sse_event("error", code="INTERNAL_ERROR", message="服务内部错误")
 
     return StreamingResponse(

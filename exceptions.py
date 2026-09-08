@@ -80,3 +80,9 @@ class SessionError(RAGBaseException):
     code = "SESSION_ERROR"
     message = "会话异常"
     status_code = 400
+
+
+class AgentError(RAGBaseException):
+    code = "AGENT_ERROR"
+    message = "Agent 执行异常"
+    status_code = 500

@@ -334,6 +334,8 @@ MyRag.query_stream(question, history, model)
 - [x] **异常处理完善** — 分层异常体系、统一错误码、全局异常处理器、SSE 结构化错误
 - [x] **重试降级处理** — LLM 调用指数退避重试（可重试错误 3 次），失败返回兜底文案
 - [x] **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定，后端按模型名缓存实例
+- [x] **混合重排工具类** — 新增 `HybridReranker`，支持加权分数融合与 RRF 两种重排策略，向量库无关
+- [ ] **LangGraph Agent** — 基于 LangGraph 框架构建 Agent 类，复用现有 `MyRag` / `MyChat`，支持自定义 Tools，对外提供 `agent_chat` REST 接口
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
 - [ ] **工具调用** — 集成 Function Calling / Tools，支持查询数据库、调用外部 API 等扩展能力
 
