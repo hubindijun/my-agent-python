@@ -1,18 +1,29 @@
-# My RAG Service
+# My RAG & Agent Service
 
-基于 **LangChain + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的 RAG（Retrieval Augmented Generation，检索增强生成）聊天服务。
+基于 **LangChain + LangGraph + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的智能对话服务，包含 **RAG 检索增强生成** 与 **LangGraph Agent（ReAct 工具调用）** 两套能力。
 
 该项目实现了：
 
+### 通用能力
 - 本地 Embedding 模型（BAAI/bge-small-zh-v1.5）生成文本向量
 - ChromaDB 持久化存储和检索向量数据
-- Retriever 根据用户问题召回相关上下文
-- 调用大语言模型（DeepSeek / OpenAI 兼容 API）生成最终回答
+- 调用大语言模型（DeepSeek / OpenAI 兼容 API）生成回答
 - **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定
 - 流式输出（SSE），支持逐字渲染
 - 多轮对话记忆（服务端 session + 前端 sessionStorage）
 - Vue3 + Arco Design + Tailwind 聊天前端界面（微信风格）
 - 分层异常体系 + 指数退避重试 + 优雅降级兜底
+
+### RAG 聊天
+- Retriever 根据用户问题召回相关上下文，交由 LLM 生成最终回答
+- 独立的 `/chat*` 接口体系，稳定可靠
+
+### LangGraph Agent
+- 基于 LangGraph StateGraph 构建的智能体，RAG 作为图的第一个节点
+- ReAct 模式的工具调用循环，支持绑定自定义 Tools
+- MemorySaver 持久化会话状态，支持断点续聊
+- 独立的 `/agent/chat*` 接口体系，与普通 RAG 完全隔离
+- 自有 LLM 实例，便于后续扩展子 Agent、多模型、复杂图结构
 
 ---
 

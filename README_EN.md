@@ -1,18 +1,29 @@
-# My RAG Service
+# My RAG & Agent Service
 
-A RAG (Retrieval Augmented Generation) chat service built with **LangChain + Local Embedding + ChromaDB + FastAPI + Vue3**.
+An intelligent conversational service built with **LangChain + LangGraph + Local Embedding + ChromaDB + FastAPI + Vue3**, featuring both **RAG (Retrieval Augmented Generation)** and **LangGraph Agent (ReAct tool calling)** capabilities.
 
 Features:
 
+### Common Capabilities
 - Local embedding model (BAAI/bge-small-zh-v1.5) for text vectorization
 - ChromaDB for persistent vector storage and retrieval
-- Retriever fetches relevant context based on user queries
-- LLM (DeepSeek / OpenAI-compatible API) generates final answers
+- LLM (DeepSeek / OpenAI-compatible API) generates answers
 - **Multi-model dynamic switching** — choose between deepseek-v4-flash / deepseek-v4-pro in the frontend, session-bound
 - Streaming output (SSE) with character-by-character rendering
 - Multi-turn conversation memory (server-side session + frontend sessionStorage)
 - Vue3 + Arco Design + Tailwind chat UI (WeChat-style)
 - Layered exception system + exponential backoff retry + graceful fallback
+
+### RAG Chat
+- Retriever fetches relevant context based on user queries, LLM generates final answers
+- Dedicated `/chat*` endpoint family, stable and reliable
+
+### LangGraph Agent
+- Agent built on LangGraph StateGraph, with RAG as the first node in the graph
+- ReAct-style tool calling loop, supports binding custom Tools
+- MemorySaver for persistent session state, supports resumable conversations
+- Dedicated `/agent/chat*` endpoint family, fully isolated from regular RAG
+- Own LLM instance, ready for future extension: sub-agents, multi-model, complex graph structures
 
 ---
 
