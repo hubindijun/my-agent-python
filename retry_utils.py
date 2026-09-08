@@ -1,3 +1,11 @@
+"""
+LLM 调用的重试与降级工具。
+
+- with_llm_retry / with_llm_retry_stream：指数退避 + 抖动，默认重试 3 次
+  可重试错误：限流 / 超时 / 服务端 / 连接错误（鉴权错误不重试）
+- with_fallback / with_fallback_stream：捕获任意 LLMError，返回兜底文案
+"""
+
 import functools
 import time
 import random

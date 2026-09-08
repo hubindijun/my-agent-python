@@ -1,3 +1,15 @@
+"""
+LangGraph Agent — 基于 LangGraph 的智能体，内置 RAG 检索节点 + ReAct 工具循环。
+
+图结构：
+    START → retrieve (RAG检索) → agent (LLM+tools) ↔ tools → END
+
+设计要点：
+- 自有 LLM 实例，独立于 MyChat，便于后续演化（子 agent、多模型、复杂图）
+- 只复用公共工具层：retry_utils（重试降级）、exceptions（异常体系）
+- MyRag 仅用于检索（只读调用 _retrieve），不修改其内部实现
+"""
+
 import logging
 import os
 
@@ -30,11 +42,23 @@ logger = logging.getLogger(__name__)
 
 
 class AgentState(MessagesState):
+    """Agent 图状态定义。
+
+    Attributes:
+        messages: 会话消息列表（继承自 MessagesState，含 Human/AIMessage/ToolMessage）
+        context: RAG 检索到的上下文文本，由 retrieve 节点写入
+        is_fallback: 本次响应是否为降级兜底回复
+    """
     context: str = ""
     is_fallback: bool = False
 
 
 def _map_openai_error(e: Exception) -> LLMError:
+    """将 OpenAI SDK 原始异常映射为项目自定义 LLMError 子类。
+
+    基于异常类名和消息中的关键词判断错误类型，
+    供 retry_utils 的重试装饰器识别可重试错误。
+    """
     name = type(e).__name__
     msg = str(e)
     lowered = (name + msg).lower()
@@ -97,6 +121,14 @@ class MyAgent:
         return self._llm_cache[model_name]
 
     def _build_graph(self):
+        """构建 LangGraph StateGraph。
+
+        流程：START → retrieve（RAG 检索）→ agent（LLM 决策）
+                          ↑                        │
+                          └────── tools ←──────────┘（有 tool_calls 时循环）
+
+        MemorySaver 作为 checkpointer，支持多轮会话持久化。
+        """
         builder = StateGraph(AgentState)
 
         builder.add_node("retrieve", self._retrieve_node)
@@ -114,6 +146,10 @@ class MyAgent:
         return builder.compile(checkpointer=self.memory)
 
     def _retrieve_node(self, state: AgentState) -> dict:
+        """RAG 检索节点：取最新用户消息作为 query，调用 MyRag 检索上下文。
+
+        检索失败时降级为空上下文，不中断图执行（Agent 可基于纯 LLM 回答）。
+        """
         messages = state["messages"]
         query = messages[-1].content if messages else ""
         try:
@@ -124,6 +160,11 @@ class MyAgent:
         return {"context": context}
 
     def _agent_node(self, state: AgentState) -> dict:
+        """Agent 节点：LLM + tools binding，决定直接回答还是调用工具。
+
+        LLM 调用外层套 with_llm_retry（3 次指数退避），
+        重试耗尽后返回 fallback 消息，图正常结束。
+        """
         context = state.get("context", "")
         messages = state["messages"]
 
@@ -174,6 +215,11 @@ class MyAgent:
         return answer, is_fallback
 
     def chat_stream(self, query: str, thread_id: str, model: str | None = None):
+        """流式对话，生成结构化事件供 SSE 使用。
+
+        事件类型：tool_result / tool_call / text / fallback / error / done
+        使用 stream_mode="values" 监听 state 变化，从最新消息判断事件类型。
+        """
         config = {"configurable": {"thread_id": thread_id}}
 
         def event_generator():

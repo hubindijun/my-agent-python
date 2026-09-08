@@ -234,6 +234,8 @@ async def chat_stream(request: StreamRequest, req: Request):
 
 # ==============================
 # Agent Endpoints
+# 独立于普通 RAG 聊天的 Agent 会话，使用独立的 session 命名空间
+# 图结构：retrieve → agent ↔ tools（见 my_agent.py）
 # ==============================
 
 def _get_agent_session_id(request: Request) -> str:
@@ -345,6 +347,11 @@ def clear_agent_history(req: Request):
 
 @app.post("/agent/chat/stream")
 async def agent_chat_stream(request: AgentStreamRequest, req: Request):
+    """Agent 流式对话（SSE）。
+
+    事件类型与 /chat/stream 对齐，额外支持 tool_call / tool_result 事件。
+    前端可选择忽略 tool 事件，渲染体验与普通聊天一致。
+    """
     session_id = _get_agent_session_id(req)
     _set_agent_session_model(session_id, request.model)
     model = agent_sessions[session_id]["model"]

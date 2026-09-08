@@ -1,3 +1,11 @@
+"""
+自定义异常体系。
+
+RAGBaseException 为根类，所有子类包含 code / message / status_code，
+可直接通过 to_dict() 序列化为 API 错误响应。
+"""
+
+
 class RAGBaseException(Exception):
     code = "INTERNAL_ERROR"
     message = "服务内部错误"

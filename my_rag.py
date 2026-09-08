@@ -1,3 +1,10 @@
+"""
+MyRag — RAG 问答主类。
+
+编排 Chroma 向量检索 + MyChat LLM 调用，外层包 with_fallback 实现降级兜底。
+LLM 调用本身通过 MyChat 的 @with_llm_retry 装饰器做 3 次指数退避重试。
+"""
+
 import logging
 
 from dotenv import load_dotenv

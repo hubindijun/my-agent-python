@@ -1,4 +1,11 @@
 #!/usr/bin/env python
+"""
+MyChat — LLM 聊天封装。
+
+负责 ChatOpenAI 初始化、模型缓存、错误映射、RAG prompt 构建。
+所有 LLM 调用通过 retry_utils 的装饰器实现指数退避重试。
+"""
+
 import os
 import logging
 
@@ -51,6 +58,7 @@ class MyChat:
         )
 
     def _get_llm(self, model: str | None = None) -> ChatOpenAI:
+        """按模型名获取 ChatOpenAI 实例，懒加载并缓存。"""
         model_name = model or self.default_model
         if model_name not in self._llm_cache:
             try:
@@ -79,6 +87,7 @@ class MyChat:
 
     @with_llm_retry()
     def rag_chat(self, query: str, context: str, model: str | None = None) -> str:
+        """RAG 问答（非流式）。根据检索到的上下文回答问题。"""
         llm = self._get_llm(model)
         rag_prompt = ChatPromptTemplate.from_messages(
             [
@@ -96,6 +105,7 @@ class MyChat:
 
     @with_llm_retry_stream()
     def rag_chat_stream(self, query: str, context: str, history: list = None, model: str | None = None):
+        """RAG 问答（流式）。支持传入会话历史，用于多轮对话。"""
         if history is None:
             history = []
 

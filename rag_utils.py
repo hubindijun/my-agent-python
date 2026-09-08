@@ -1,3 +1,13 @@
+"""
+多路检索结果混合重排工具。
+
+HybridReranker 支持两种融合策略：
+- weighted：min-max 归一化后按权重加权求和
+- rrf：Reciprocal Rank Fusion，基于排名倒数，不依赖分数绝对值
+
+与向量库无关，输入为通用的 (Document, score) 列表。
+"""
+
 from langchain_core.documents import Document
 
 
