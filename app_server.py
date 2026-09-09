@@ -14,12 +14,13 @@ from pydantic import BaseModel, field_validator
 from exceptions import RAGBaseException, ValidationError, AgentError
 from my_rag import MyRag
 from my_agent import MyAgent
+from agent_tools import make_calculator_tool
 
 ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 DEFAULT_MODEL = "deepseek-v4-flash"
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("app_server")
@@ -35,7 +36,7 @@ app.add_middleware(
 )
 
 rag = MyRag()
-agent = MyAgent(rag)
+agent = MyAgent(rag, extra_tools=[make_calculator_tool()])
 
 sessions: dict[str, dict] = {}
 agent_sessions: dict[str, dict] = {}

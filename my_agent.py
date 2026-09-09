@@ -41,6 +41,9 @@ from retry_utils import with_llm_retry, FALLBACK_MESSAGE
 logger = logging.getLogger(__name__)
 
 
+MAX_TOOL_RETRIES = 2
+
+
 class AgentState(MessagesState):
     """Agent 图状态定义。
 
@@ -48,9 +51,13 @@ class AgentState(MessagesState):
         messages: 会话消息列表（继承自 MessagesState，含 Human/AIMessage/ToolMessage）
         context: RAG 检索到的上下文文本，由 retrieve 节点写入
         is_fallback: 本次响应是否为降级兜底回复
+        tool_error_count: 当前轮次工具调用错误次数，达到 MAX_TOOL_RETRIES 后强制结束
+        max_retries_reached: 工具错误重试次数是否已达上限
     """
     context: str = ""
     is_fallback: bool = False
+    tool_error_count: int = 0
+    max_retries_reached: bool = False
 
 
 def _map_openai_error(e: Exception) -> LLMError:
@@ -93,13 +100,20 @@ class MyAgent:
         self.tools: list[BaseTool] = list(extra_tools) if extra_tools else []
 
         self.system_prompt = (
-            "你是一个专业的AI助手。请根据提供的上下文回答用户问题。"
+            "你是一个简洁高效的AI助手。请根据提供的上下文回答用户问题。"
             "如果上下文中没有相关信息，请基于你的知识礼貌回答。\n\n"
-            "回答要求：\n"
-            "1. 使用清晰的段落组织内容\n"
-            "2. 适当使用列表展示要点\n"
-            "3. 关键信息可以加粗\n"
-            "4. 保持结构清晰，易于阅读\n\n"
+            "回答原则：\n"
+            "1. 回答尽量简洁，直接给出答案，不要多余的客套和铺垫\n"
+            "2. 不要使用 markdown 格式（加粗、斜体、列表等），用纯文本回答\n"
+            "3. 涉及加减乘除等数学计算时，必须使用 calculator 工具，不要心算\n"
+            "4. 调用 calculator 工具得到结果后，直接输出最终数值，"
+            "不要重复算式、不要写计算过程、不要加任何前缀或解释\n"
+            "5. 如果工具调用失败，请修正参数后重试，"
+            f"同一轮最多重试 {MAX_TOOL_RETRIES} 次；多次失败则向用户说明问题\n\n"
+            "示例：\n"
+            "用户：123 + 456 等于多少？\n"
+            "（调用 calculator 工具，表达式 \"123 + 456\"，得到结果 579）\n"
+            "助手：579\n\n"
             "Context:\n{context}"
         )
 
@@ -131,9 +145,11 @@ class MyAgent:
         """
         builder = StateGraph(AgentState)
 
+        self._tool_node = ToolNode(self.tools)
+
         builder.add_node("retrieve", self._retrieve_node)
         builder.add_node("agent", self._agent_node)
-        builder.add_node("tools", ToolNode(self.tools))
+        builder.add_node("tools", self._tools_node)
 
         builder.add_edge(START, "retrieve")
         builder.add_edge("retrieve", "agent")
@@ -159,6 +175,37 @@ class MyAgent:
             context = ""
         return {"context": context}
 
+    def _tools_node(self, state: AgentState) -> dict:
+        """工具执行节点：调用 ToolNode 执行工具，并追踪工具错误次数。
+
+        工具抛出异常时，LangChain ToolNode 会将 ToolMessage 标记为 is_error=True，
+        以此判断是否计入错误计数；达到 MAX_TOOL_RETRIES 次后标记 max_retries_reached，
+        _should_continue 会强制结束循环。
+        """
+        # 从最后一条 AIMessage 中提取 tool_calls 并打印
+        last_msg = state["messages"][-1]
+        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+            for tc in last_msg.tool_calls:
+                logger.debug(f"=== 工具调用: {tc.get('name')} ===")
+                logger.debug(f"  args: {tc.get('args')}")
+
+        result = self._tool_node.invoke(state)
+        tool_messages = result.get("messages", [])
+        error_count = state.get("tool_error_count", 0)
+
+        for msg in tool_messages:
+            is_err = getattr(msg, "is_error", False)
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            logger.debug(f"=== 工具结果: {msg.name} (is_error={is_err}) ===")
+            logger.debug(f"  content: {content[:300]}{'...' if len(content) > 300 else ''}")
+            if is_err:
+                error_count += 1
+
+        update = {"messages": tool_messages, "tool_error_count": error_count}
+        if error_count >= MAX_TOOL_RETRIES:
+            update["max_retries_reached"] = True
+        return update
+
     def _agent_node(self, state: AgentState) -> dict:
         """Agent 节点：LLM + tools binding，决定直接回答还是调用工具。
 
@@ -176,6 +223,15 @@ class MyAgent:
         if self.tools:
             llm = llm.bind_tools(self.tools)
 
+        logger.debug("=== Agent LLM 输入 ===")
+        for i, m in enumerate(full_messages):
+            role = getattr(m, "type", type(m).__name__)
+            content = m.content if isinstance(m.content, str) else str(m.content)
+            tool_calls = getattr(m, "tool_calls", None)
+            logger.debug(f"[{i}] {role}: {content[:200]}{'...' if len(content) > 200 else ''}")
+            if tool_calls:
+                logger.debug(f"    tool_calls: {tool_calls}")
+
         def _invoke_with_error_mapping():
             try:
                 return llm.invoke(full_messages)
@@ -188,12 +244,21 @@ class MyAgent:
                 return _invoke_with_error_mapping()
 
             response = _call()
+
+            logger.debug("=== Agent LLM 输出 ===")
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            logger.debug(f"content: {content[:300]}{'...' if len(content) > 300 else ''}")
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                logger.debug(f"tool_calls: {response.tool_calls}")
+
             return {"messages": [response], "is_fallback": False}
         except LLMError:
             fallback_msg = AIMessage(content=FALLBACK_MESSAGE)
             return {"messages": [fallback_msg], "is_fallback": True}
 
     def _should_continue(self, state: AgentState) -> str:
+        if state.get("max_retries_reached", False):
+            return "end"
         last_message = state["messages"][-1]
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             return "tools"

@@ -425,6 +425,22 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver (thread_id = session_id)
 
 ---
 
+## Todo List
+
+- [x] **Exception handling** — Layered exception system, unified error codes, global exception handler, SSE structured errors
+- [x] **Retry & fallback** — Exponential backoff retry for LLM calls (3 retries for retryable errors), fallback message on failure
+- [x] **Multi-model dynamic switching** — Choose deepseek-v4-flash / deepseek-v4-pro in frontend, session-bound, backend caches instances by model name
+- [x] **Hybrid reranker utility** — Added `HybridReranker`, supports weighted score fusion and RRF strategies, vector-DB-agnostic
+- [x] **LangGraph Agent** — Agent class built on LangGraph, with built-in RAG retrieval node + ReAct tool loop, supports custom Tools, isolated from regular RAG chat endpoints
+- [x] **Local calculator tool** — Agent integrates calculator local tool (AST-safe evaluation, supports +-*/ and nested expressions), with auto-retry on tool errors (max 2 retries)
+- [x] **Frontend router refactor** — Introduced vue-router, split into RAG chat / Agent chat pages, history mode, top pill-style switcher
+- [x] **RAG similarity threshold** — Added similarity_score_threshold=0.3 to vector retrieval, filtering low-relevance documents to reduce noisy context
+- [ ] **LangFuse integration** — Integrate LangFuse observability platform to trace full LLM call chains, RAG retrieval, and Agent tool execution, with latency/cost/quality analytics
+- [ ] **Spring Boot MCP tool integration** — Bridge Spring Boot backend services via MCP (Model Context Protocol), expose Java-side business capabilities (database, cache, business APIs) to the Agent as tools
+- [ ] **Persistent memory** — Migrate session history from in-memory to persistent storage (SQLite / Redis), survive restarts
+
+---
+
 ## FAQ
 
 **Q: Embedding model download is very slow. What can I do?**

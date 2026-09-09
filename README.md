@@ -449,9 +449,13 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
 - [x] **重试降级处理** — LLM 调用指数退避重试（可重试错误 3 次），失败返回兜底文案
 - [x] **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定，后端按模型名缓存实例
 - [x] **混合重排工具类** — 新增 `HybridReranker`，支持加权分数融合与 RRF 两种重排策略，向量库无关
-- [ ] **LangGraph Agent** — 基于 LangGraph 框架构建 Agent 类，复用现有 `MyRag` / `MyChat`，支持自定义 Tools，对外提供 `agent_chat` REST 接口
+- [x] **LangGraph Agent** — 基于 LangGraph 框架构建 Agent 类，内置 RAG 检索节点 + ReAct 工具循环，支持自定义 Tools，独立于普通 RAG 聊天接口体系
+- [x] **本地计算器工具** — Agent 集成 calculator 本地工具（AST 安全计算，支持加减乘除与嵌套表达式），工具错误自动重试，最多 2 次
+- [x] **前端路由重构** — 引入 vue-router，拆分 RAG 问答 / Agent 对话两个独立页面，history 模式，顶部滑动切换
+- [x] **RAG 检索相似度阈值** — 向量检索增加 similarity_score_threshold=0.3，过滤低相关文档，减少无关上下文干扰
+- [ ] **LangFuse 集成** — 接入 LangFuse 可观测性平台，追踪 LLM 调用、RAG 检索、Agent 工具执行的完整链路，支持耗时/成本/质量分析
+- [ ] **Spring Boot MCP 工具集成** — 通过 MCP（Model Context Protocol）桥接 Spring Boot 后端服务，将 Java 侧业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent 使用
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
-- [ ] **工具调用** — 集成 Function Calling / Tools，支持查询数据库、调用外部 API 等扩展能力
 
 ---
 

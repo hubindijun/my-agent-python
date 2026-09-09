@@ -46,8 +46,10 @@ class MyRag:
         self.retriever = (
             self.vectorstore
             .as_retriever(
+                search_type="similarity_score_threshold",
                 search_kwargs={
-                    "k": 2
+                    "k": 2,
+                    "score_threshold": 0.3,
                 }
             )
         )
