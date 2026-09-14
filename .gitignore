@@ -1,5 +1,6 @@
 # Environment
 .env
+docker-langfuse/.env
 
 # Python
 __pycache__/

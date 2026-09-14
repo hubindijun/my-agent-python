@@ -56,25 +56,25 @@ class MyRag:
 
         self.chat = MyChat()
 
-    def _retrieve(self, question: str) -> str:
+    def _retrieve(self, question: str, config: dict | None = None) -> str:
         try:
-            docs = self.retriever.invoke(question)
+            docs = self.retriever.invoke(question, config=config)
         except Exception as e:
             raise RetrieverError(message="向量检索失败", detail=str(e)) from e
         return "\n".join([doc.page_content for doc in docs])
 
-    def query(self, question: str, model: str | None = None):
-        context = self._retrieve(question)
+    def query(self, question: str, model: str | None = None, config: dict | None = None):
+        context = self._retrieve(question, config=config)
 
         answer, is_fallback = with_fallback(
-            lambda: self.chat.rag_chat(query=question, context=context, model=model)
+            lambda: self.chat.rag_chat(query=question, context=context, model=model, config=config)
         )
         return answer, is_fallback
 
-    def query_stream(self, question: str, history: list = None, model: str | None = None):
-        context = self._retrieve(question)
+    def query_stream(self, question: str, history: list = None, model: str | None = None, config: dict | None = None):
+        context = self._retrieve(question, config=config)
 
         stream_iter, is_fallback = with_fallback_stream(
-            lambda: self.chat.rag_chat_stream(query=question, context=context, history=history, model=model)
+            lambda: self.chat.rag_chat_stream(query=question, context=context, history=history, model=model, config=config)
         )
         return stream_iter, is_fallback

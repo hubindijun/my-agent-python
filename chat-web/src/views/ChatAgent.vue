@@ -88,6 +88,7 @@
     <footer class="chat-footer">
       <div class="input-wrapper">
         <a-textarea
+          ref="inputRef"
           v-model="inputText"
           placeholder="输入问题，按 Enter 发送，Shift+Enter 换行"
           :auto-size="{ minRows: 1, maxRows: 5 }"
@@ -133,6 +134,7 @@ const sessionId = ref('')
 const inputText = ref('')
 const isStreaming = ref(false)
 const listRef = ref(null)
+const inputRef = ref(null)
 
 const suggestions = [
   '12345 + 67890 等于多少？',
@@ -288,6 +290,8 @@ const sendMessage = async () => {
     isStreaming.value = false
     saveToStorage()
     await scrollToBottom()
+    await nextTick()
+    inputRef.value?.focus()
   }
 }
 

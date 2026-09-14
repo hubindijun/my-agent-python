@@ -15,6 +15,7 @@ from exceptions import RAGBaseException, ValidationError, AgentError
 from my_rag import MyRag
 from my_agent import MyAgent
 from agent_tools import make_calculator_tool
+from langfuse_setup import get_langfuse_handler, build_langchain_metadata
 
 ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -109,6 +110,18 @@ class StreamRequest(BaseModel):
         return v
 
 
+def _build_langchain_config(session_id: str, trace_name: str) -> dict | None:
+    """构建 LangChain RunnableConfig，包含 Langfuse callback 和 metadata。
+
+    如果 Langfuse 不可用（未安装或环境变量缺失），返回 None。
+    """
+    handler = get_langfuse_handler(session_id=session_id, trace_name=trace_name)
+    if not handler:
+        return None
+    metadata = build_langchain_metadata(session_id=session_id, trace_name=trace_name)
+    return {"callbacks": [handler], "metadata": metadata}
+
+
 def _sse_event(event_type: str, **kwargs) -> str:
     payload = {"type": event_type, **kwargs}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -157,7 +170,10 @@ def chat(request: QueryRequest, req: Request):
     set_session_model(session_id, request.model)
     model = sessions[session_id]["model"]
     add_history(session_id, "user", request.query)
-    answer, is_fallback = rag.query(request.query, model=model)
+
+    lc_config = _build_langchain_config(session_id, "rag_chat")
+
+    answer, is_fallback = rag.query(request.query, model=model, config=lc_config)
     add_history(session_id, "assistant", answer)
     response = {"query": request.query, "answer": answer, "session_id": session_id, "model": model}
     if is_fallback:
@@ -200,7 +216,9 @@ async def chat_stream(request: StreamRequest, req: Request):
         try:
             yield _sse_event("session", session_id=session_id, model=model)
 
-            stream_iter, is_fallback = rag.query_stream(request.query, history, model=model)
+            lc_config = _build_langchain_config(session_id, "rag_chat_stream")
+
+            stream_iter, is_fallback = rag.query_stream(request.query, history, model=model, config=lc_config)
 
             for chunk in stream_iter:
                 if chunk:
@@ -303,7 +321,9 @@ def agent_chat(request: AgentQueryRequest, req: Request):
     _set_agent_session_model(session_id, request.model)
     model = agent_sessions[session_id]["model"]
 
-    answer, is_fallback = agent.chat(request.query, thread_id=session_id, model=model)
+    lc_config = _build_langchain_config(session_id, "agent_chat")
+
+    answer, is_fallback = agent.chat(request.query, thread_id=session_id, model=model, extra_config=lc_config)
 
     history = agent.get_history(session_id)
     tool_calls = []
@@ -361,7 +381,9 @@ async def agent_chat_stream(request: AgentStreamRequest, req: Request):
         try:
             yield _sse_event("session", session_id=session_id, model=model)
 
-            stream_iter = agent.chat_stream(request.query, thread_id=session_id, model=model)
+            lc_config = _build_langchain_config(session_id, "agent_chat_stream")
+
+            stream_iter = agent.chat_stream(request.query, thread_id=session_id, model=model, extra_config=lc_config)
 
             for event in stream_iter:
                 event_type = event.get("type", "")

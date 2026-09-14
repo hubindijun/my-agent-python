@@ -182,23 +182,12 @@ class MyAgent:
         以此判断是否计入错误计数；达到 MAX_TOOL_RETRIES 次后标记 max_retries_reached，
         _should_continue 会强制结束循环。
         """
-        # 从最后一条 AIMessage 中提取 tool_calls 并打印
-        last_msg = state["messages"][-1]
-        if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
-            for tc in last_msg.tool_calls:
-                logger.debug(f"=== 工具调用: {tc.get('name')} ===")
-                logger.debug(f"  args: {tc.get('args')}")
-
         result = self._tool_node.invoke(state)
         tool_messages = result.get("messages", [])
         error_count = state.get("tool_error_count", 0)
 
         for msg in tool_messages:
-            is_err = getattr(msg, "is_error", False)
-            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-            logger.debug(f"=== 工具结果: {msg.name} (is_error={is_err}) ===")
-            logger.debug(f"  content: {content[:300]}{'...' if len(content) > 300 else ''}")
-            if is_err:
+            if getattr(msg, "is_error", False):
                 error_count += 1
 
         update = {"messages": tool_messages, "tool_error_count": error_count}
@@ -223,15 +212,6 @@ class MyAgent:
         if self.tools:
             llm = llm.bind_tools(self.tools)
 
-        logger.debug("=== Agent LLM 输入 ===")
-        for i, m in enumerate(full_messages):
-            role = getattr(m, "type", type(m).__name__)
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            tool_calls = getattr(m, "tool_calls", None)
-            logger.debug(f"[{i}] {role}: {content[:200]}{'...' if len(content) > 200 else ''}")
-            if tool_calls:
-                logger.debug(f"    tool_calls: {tool_calls}")
-
         def _invoke_with_error_mapping():
             try:
                 return llm.invoke(full_messages)
@@ -244,12 +224,6 @@ class MyAgent:
                 return _invoke_with_error_mapping()
 
             response = _call()
-
-            logger.debug("=== Agent LLM 输出 ===")
-            content = response.content if isinstance(response.content, str) else str(response.content)
-            logger.debug(f"content: {content[:300]}{'...' if len(content) > 300 else ''}")
-            if hasattr(response, "tool_calls") and response.tool_calls:
-                logger.debug(f"tool_calls: {response.tool_calls}")
 
             return {"messages": [response], "is_fallback": False}
         except LLMError:
@@ -264,8 +238,10 @@ class MyAgent:
             return "tools"
         return "end"
 
-    def chat(self, query: str, thread_id: str, model: str | None = None) -> tuple[str, bool]:
-        config = {"configurable": {"thread_id": thread_id}}
+    def chat(self, query: str, thread_id: str, model: str | None = None, extra_config: dict | None = None) -> tuple[str, bool]:
+        config: dict = {"configurable": {"thread_id": thread_id}}
+        if extra_config:
+            config.update(extra_config)
         try:
             result = self.graph.invoke(
                 {"messages": [HumanMessage(content=query)]},
@@ -279,13 +255,15 @@ class MyAgent:
         answer = last_msg.content if isinstance(last_msg.content, str) else ""
         return answer, is_fallback
 
-    def chat_stream(self, query: str, thread_id: str, model: str | None = None):
+    def chat_stream(self, query: str, thread_id: str, model: str | None = None, extra_config: dict | None = None):
         """流式对话，生成结构化事件供 SSE 使用。
 
         事件类型：tool_result / tool_call / text / fallback / error / done
         使用 stream_mode="values" 监听 state 变化，从最新消息判断事件类型。
         """
-        config = {"configurable": {"thread_id": thread_id}}
+        config: dict = {"configurable": {"thread_id": thread_id}}
+        if extra_config:
+            config.update(extra_config)
 
         def event_generator():
             try:

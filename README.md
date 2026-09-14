@@ -38,6 +38,7 @@
 - [前端说明](#前端说明)
 - [核心模块说明](#核心模块说明)
 - [项目调用链路](#项目调用链路)
+- [Langfuse 监控](#langfuse-监控)
 
 ---
 
@@ -51,6 +52,7 @@ my/
 ├── my_agent.py                # LangGraph Agent（RAG 节点 + ReAct 工具循环）
 ├── agent_tools.py             # Agent 自定义工具注册辅助
 ├── rag_utils.py               # RAG 工具类（HybridReranker 混合重排）
+├── langfuse_setup.py          # Langfuse 监控集成（CallbackHandler 工厂 + 降级兜底）
 ├── exceptions.py              # 分层异常体系
 ├── retry_utils.py             # LLM 调用重试 + 兜底装饰器
 ├── pre_load_rag_index.py      # 向量数据库初始化脚本
@@ -61,11 +63,12 @@ my/
 │
 ├── chat-web/                  # Vue3 前端
 │   ├── src/
-│   │   ├── App.vue            # 普通聊天页面主组件
+│   │   ├── App.vue            # 顶部布局 + 路由出口
+│   │   ├── views/             # 页面组件（ChatRAG.vue / ChatAgent.vue）
+│   │   ├── router/index.js    # vue-router 配置
 │   │   ├── main.js
 │   │   └── style.css
-│   ├── index.html             # 普通聊天入口
-│   ├── agentIndex.html        # Agent 聊天入口
+│   ├── index.html
 │   ├── vite.config.js         # Vite 配置 + 代理
 │   ├── tailwind.config.js
 │   └── package.json
@@ -74,6 +77,10 @@ my/
 ├── requirements.txt           # Python 依赖清单
 ├── README.md                  # 项目说明文档
 └── README_EN.md               # English documentation
+
+├── docker-langfuse/           # Langfuse 监控平台 Docker Compose 配置
+│   ├── docker-compose.yml     # 6 服务编排（web + worker + Postgres + ClickHouse + Redis + MinIO）
+│   └── .env                   # Langfuse 平台密钥配置（不提交到 git）
 ```
 
 ---
@@ -83,11 +90,13 @@ my/
 | 类别 | 技术 | 说明 |
 |------|------|------|
 | LLM 框架 | LangChain | 编排 RAG 流程、Prompt 管理 |
+| Agent 框架 | LangGraph | 状态图编排，支持 ReAct 工具循环 + 记忆 |
 | 嵌入模型 | BAAI/bge-small-zh-v1.5 | 中文 Embedding 模型，本地运行 |
 | 向量数据库 | ChromaDB | 轻量级本地向量存储 |
 | 大语言模型 | DeepSeek V4 (Flash / Pro) | 支持前端动态切换，OpenAI 兼容接口 |
+| 可观测性 | Langfuse | LLM 调用追踪、RAG 链路监控、Agent 工具执行可视化 |
 | Web 框架 | FastAPI | 高性能异步 HTTP 服务 |
-| 前端框架 | Vue 3 + Vite | 聊天界面 |
+| 前端框架 | Vue 3 + Vite + vue-router | 聊天界面，双页面路由 |
 | UI 组件库 | Arco Design Vue | 基础组件 |
 | 样式方案 | Tailwind CSS | 原子化 CSS |
 | 环境管理 | Conda + pip | mylearn 虚拟环境（Python 3.11） |
@@ -133,6 +142,11 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 # Embedding 模型离线加载（避免启动时访问 HuggingFace）
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
+
+# Langfuse 可观测性平台（可选，不配置则不启用监控）
+LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LANGFUSE_HOST=http://localhost:3000
 ```
 
 ### 4. 安装前端依赖
@@ -367,6 +381,19 @@ OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 - 提供 `chat()` / `chat_stream()` / `get_history()` / `clear_history()`
 - 支持通过 `extra_tools` 参数绑定自定义 LangChain Tools
 
+### langfuse_setup.py
+
+Langfuse 可观测性集成模块。封装 Langfuse CallbackHandler 的创建逻辑，**优雅降级**：未安装 SDK 或缺少环境变量时自动跳过，不影响主流程。
+
+- `get_langfuse_handler(session_id, trace_name, ...)` — 返回 CallbackHandler 或 None
+- `build_langchain_metadata(session_id, trace_name, ...)` — 构建 Langfuse trace metadata
+- `flush_langfuse()` — 强制 flush 待上报事件
+- v4 SDK，自动从环境变量读取密钥，使用 `trace_context` 关联同一次请求内的所有调用
+
+集成范围：
+- **普通 RAG 聊天**：retriever 检索 + LLM 链调用分别上报（2 条 trace）
+- **Agent 聊天**：LangGraph 图级 callback 自动追踪所有节点（retrieve + agent LLM + tools），单条完整 trace
+
 ### rag_utils.py
 
 混合重排工具类 `HybridReranker`。与向量库无关，输入为通用 `list[tuple[Document, float]]`。
@@ -443,6 +470,108 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
 
 ---
 
+## Langfuse 监控
+
+基于 Langfuse 开源 LLM 工程平台，实现全链路可观测性：追踪每次 LLM 调用的输入/输出、token 用量、延迟，可视化 RAG 检索和 Agent 工具调用过程。
+
+### 架构
+
+```
+HTTP 请求 → FastAPI 端点
+              └─ _build_langchain_config() → langfuse_setup.py
+                   ├─ CallbackHandler → RunnableConfig.callbacks
+                   └─ metadata → langfuse_trace（name / session_id / user_id）
+                        │
+                        ▼
+                   Langfuse SDK（异步上报）→ Langfuse 平台（Docker 自托管）
+```
+
+- **Agent 路径**：LangGraph 图级 callback 自动传播到所有节点（retrieve / agent / tools），单次请求对应一条完整 trace
+- **RAG 路径**：retriever.invoke 与 chain.invoke 为两次独立 LCEL 调用，对应两条 trace（共享 session_id 可在 UI 中按会话聚合）
+
+### 平台搭建（Docker Compose）
+
+Langfuse 平台通过 Docker Compose 自托管，配置在 `docker-langfuse/` 目录下。
+
+**服务组成**（6 个容器）：
+
+| 服务 | 作用 | 端口 |
+|------|------|------|
+| langfuse-web | Web UI + API | 3000 |
+| langfuse-worker | 后台任务（事件消费、导出等） | — |
+| postgres | 主数据库 | 5432 |
+| clickhouse | 分析型数据库（事件存储） | 8123 / 9000 |
+| redis | 缓存 + 队列 | 6379 |
+| minio | 对象存储（媒体文件、批量导出） | 9090 / 9091 |
+
+**搭建步骤**：
+
+```bash
+cd docker-langfuse
+
+# 1. 生成密钥并配置 .env（参考下文密钥清单）
+# 2. 拉取镜像
+docker compose pull
+
+# 3. 后台启动
+docker compose up -d
+
+# 4. 等待所有服务 healthy（约 2-3 分钟）
+docker compose ps
+
+# 5. 查看日志
+docker compose logs -f langfuse-web
+```
+
+启动成功后访问 `http://localhost:3000`，注册管理员账号并创建项目，在项目设置中获取 Public Key 和 Secret Key。
+
+**密钥生成**（在 `.env` 中配置）：
+
+```bash
+# 生成随机密钥示例
+openssl rand -hex 16   # SALT
+openssl rand -hex 32   # POSTGRES_PASSWORD / ENCRYPTION_KEY / NEXTAUTH_SECRET / CLICKHOUSE_PASSWORD 等
+```
+
+需要配置的密钥清单：
+- `POSTGRES_PASSWORD` / `DATABASE_URL`（密码需一致）
+- `SALT`、`ENCRYPTION_KEY`、`NEXTAUTH_SECRET`
+- `CLICKHOUSE_PASSWORD`
+- `REDIS_AUTH`
+- `MINIO_ROOT_PASSWORD`（3 个 S3 SECRET_ACCESS_KEY 与其一致）
+
+> **国内镜像加速**：如直接拉取镜像超时，在 Docker Desktop 配置镜像加速器，并将 `docker-compose.yml` 中的镜像地址从 `docker.langfuse.com/langfuse/...` 改为 `langfuse/...`（走 Docker Hub）。
+
+### Python 项目集成
+
+**1. 安装依赖**
+
+```bash
+pip install langfuse
+```
+
+> 国内可用阿里云镜像：`pip install langfuse -i https://mirrors.aliyun.com/pypi/simple/`
+
+**2. 配置环境变量**
+
+在项目 `.env` 中添加（来自 Langfuse 项目设置页面）：
+
+```env
+LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LANGFUSE_HOST=http://localhost:3000
+```
+
+**3. 验证**
+
+启动后端服务后，在前端发送一条消息，然后打开 Langfuse Web UI（`http://localhost:3000`），在 Traces 页面应能看到对应的追踪记录：
+- 普通聊天：VectorStoreRetriever + RunnableSequence 两条 trace
+- Agent 聊天：单条 trace，包含 retrieve / agent / tools 等多个 span
+
+**降级策略**：未配置 `LANGFUSE_*` 环境变量或 SDK 不可用时，`langfuse_setup.py` 自动返回 None，所有接口正常工作，无任何报错。
+
+---
+
 ## Todo List
 
 - [x] **异常处理完善** — 分层异常体系、统一错误码、全局异常处理器、SSE 结构化错误
@@ -453,7 +582,12 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
 - [x] **本地计算器工具** — Agent 集成 calculator 本地工具（AST 安全计算，支持加减乘除与嵌套表达式），工具错误自动重试，最多 2 次
 - [x] **前端路由重构** — 引入 vue-router，拆分 RAG 问答 / Agent 对话两个独立页面，history 模式，顶部滑动切换
 - [x] **RAG 检索相似度阈值** — 向量检索增加 similarity_score_threshold=0.3，过滤低相关文档，减少无关上下文干扰
-- [ ] **LangFuse 集成** — 接入 LangFuse 可观测性平台，追踪 LLM 调用、RAG 检索、Agent 工具执行的完整链路，支持耗时/成本/质量分析
+- [x] **Langfuse 集成** — 接入 Langfuse 可观测性平台，Docker Compose 自托管 6 服务集群，Python SDK v4 集成 CallbackHandler，支持 RAG 检索 / LLM 调用 / Agent 工具执行全链路追踪，优雅降级不影响主流程
+  - [x] Docker Compose 自托管 Langfuse 平台（web + worker + Postgres + ClickHouse + Redis + MinIO）
+  - [x] Python SDK 集成（langfuse_setup.py，CallbackHandler 工厂 + 降级兜底）
+  - [x] 普通 RAG 聊天追踪（retriever + LLM chain）
+  - [x] Agent 全链路追踪（LangGraph 图级 callback，retrieve + agent + tools 单 trace）
+  - [x] 会话维度关联（session_id 透传到 Langfuse trace metadata）
 - [ ] **Spring Boot MCP 工具集成** — 通过 MCP（Model Context Protocol）桥接 Spring Boot 后端服务，将 Java 侧业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent 使用
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
 

@@ -80,13 +80,13 @@ class MyChat:
             raise _map_openai_error(e) from e
 
     @with_llm_retry()
-    def chat(self, query: str, model: str | None = None) -> str:
+    def chat(self, query: str, model: str | None = None, config: dict | None = None) -> str:
         llm = self._get_llm(model)
         chain = self.prompt | llm | StrOutputParser()
-        return self._wrap_llm_error(lambda: chain.invoke({"query": query}))
+        return self._wrap_llm_error(lambda: chain.invoke({"query": query}, config=config))
 
     @with_llm_retry()
-    def rag_chat(self, query: str, context: str, model: str | None = None) -> str:
+    def rag_chat(self, query: str, context: str, model: str | None = None, config: dict | None = None) -> str:
         """RAG 问答（非流式）。根据检索到的上下文回答问题。"""
         llm = self._get_llm(model)
         rag_prompt = ChatPromptTemplate.from_messages(
@@ -101,10 +101,10 @@ class MyChat:
             ]
         )
         chain = rag_prompt | llm | StrOutputParser()
-        return self._wrap_llm_error(lambda: chain.invoke({"query": query, "context": context}))
+        return self._wrap_llm_error(lambda: chain.invoke({"query": query, "context": context}, config=config))
 
     @with_llm_retry_stream()
-    def rag_chat_stream(self, query: str, context: str, history: list = None, model: str | None = None):
+    def rag_chat_stream(self, query: str, context: str, history: list = None, model: str | None = None, config: dict | None = None):
         """RAG 问答（流式）。支持传入会话历史，用于多轮对话。"""
         if history is None:
             history = []
@@ -140,7 +140,7 @@ class MyChat:
 
         def _stream():
             try:
-                for chunk in chain.stream({"query": query, "context": context, "history": history_messages}):
+                for chunk in chain.stream({"query": query, "context": context, "history": history_messages}, config=config):
                     yield chunk
             except Exception as e:
                 raise _map_openai_error(e) from e
