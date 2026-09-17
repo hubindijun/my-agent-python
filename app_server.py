@@ -16,6 +16,7 @@ from my_rag import MyRag
 from my_agent import MyAgent
 from agent_tools import make_calculator_tool
 from langfuse_setup import get_langfuse_handler, build_langchain_metadata
+from mcp_client import load_all_mcp_tools, shutdown_mcp_clients
 
 ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -28,6 +29,13 @@ logger = logging.getLogger("app_server")
 
 app = FastAPI(title="My RAG Service")
 
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    shutdown_mcp_clients()
+    logger.info("MCP 客户端已关闭")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -37,7 +45,13 @@ app.add_middleware(
 )
 
 rag = MyRag()
-agent = MyAgent(rag, extra_tools=[make_calculator_tool()])
+
+local_tools = [make_calculator_tool()]
+mcp_tools = load_all_mcp_tools()
+all_tools = local_tools + mcp_tools
+logger.info(f"Agent 已加载工具: {[t.name for t in all_tools]} "
+            f"(本地 {len(local_tools)} 个, MCP {len(mcp_tools)} 个)")
+agent = MyAgent(rag, extra_tools=all_tools)
 
 sessions: dict[str, dict] = {}
 agent_sessions: dict[str, dict] = {}

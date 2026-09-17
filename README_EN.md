@@ -50,8 +50,10 @@ my/
 ├── my_rag.py                  # RAG core logic (ChromaDB retrieval)
 ├── my_chat.py                 # Regular chat LLM wrapper (with retry + fallback)
 ├── my_agent.py                # LangGraph Agent (RAG node + ReAct tool loop)
-├── agent_tools.py             # Agent custom tool registration helpers
+├── agent_tools.py             # Agent local tool factory functions
+├── mcp_client.py              # MCP client wrapper (bridge external MCP service tools)
 ├── rag_utils.py               # RAG utilities (HybridReranker)
+├── langfuse_setup.py          # Langfuse observability integration (CallbackHandler factory + graceful degradation)
 ├── exceptions.py              # Hierarchical exception system
 ├── retry_utils.py             # LLM retry + fallback decorators
 ├── pre_load_rag_index.py      # Vector DB initialization script
@@ -84,11 +86,14 @@ my/
 | Category | Technology | Description |
 |----------|-----------|-------------|
 | LLM Framework | LangChain | RAG orchestration, prompt management |
+| Agent Framework | LangGraph | State graph orchestration, ReAct tool loop + memory |
 | Embedding Model | BAAI/bge-small-zh-v1.5 | Chinese embedding model, runs locally |
 | Vector Database | ChromaDB | Lightweight local vector store |
 | LLM | DeepSeek V4 (Flash / Pro) | Dynamic switching in frontend, OpenAI-compatible API |
+| Observability | Langfuse | LLM call tracing, RAG pipeline monitoring, Agent tool execution visualization |
+| MCP Protocol | langchain-mcp-adapters + mcp SDK | Bridge external MCP services (e.g. Spring Boot) tools to the Agent |
 | Web Framework | FastAPI | High-performance async HTTP server |
-| Frontend | Vue 3 + Vite | Chat UI |
+| Frontend | Vue 3 + Vite + vue-router | Chat UI, dual-page routing |
 | UI Component Library | Arco Design Vue | Base components |
 | Styling | Tailwind CSS | Utility-first CSS |
 | Environment | Conda + pip | `mylearn` virtual env (Python 3.11) |
@@ -132,6 +137,12 @@ OPENAI_API_BASE=https://api.deepseek.com/v1
 # Offline embedding model loading (avoids accessing HuggingFace at startup)
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
+
+# MCP service config (optional, bridges external MCP service tools to the Agent)
+MCP_ENABLED=true
+MCP_SPRINGBOOT_URL=http://localhost:8080/mcp/sse
+MCP_SPRINGBOOT_TIMEOUT=10
+MCP_SPRINGBOOT_API_KEY=
 ```
 
 ### 4. Install frontend dependencies
@@ -334,6 +345,16 @@ Graph structure: `START → retrieve (RAG) → agent (LLM+tools) ↔ tools → E
 - Provides `chat()` / `chat_stream()` / `get_history()` / `clear_history()`
 - Supports binding custom LangChain Tools via the `extra_tools` parameter
 
+### mcp_client.py
+
+MCP (Model Context Protocol) client wrapper module. Bridges tools from external MCP over SSE services (e.g. Spring Boot backend) to the Agent, enabling the LLM to invoke external business system capabilities.
+
+- `load_all_mcp_tools()` — loads tools from all configured MCP services, returns `list[BaseTool]`
+- `load_mcp_tools_for_service(name)` — loads tools from a single MCP service
+- `shutdown_mcp_clients()` — closes connections (called by FastAPI shutdown hook)
+- **Graceful degradation**: `MCP_ENABLED=false` / SDK not installed / missing config / connection failure — all return an empty tool list, Agent starts normally without interruption
+- Tools are injected into `MyAgent` via the `extra_tools` parameter, equivalent to local tools (calculator), unified through ToolNode + error counting mechanism
+
 ### rag_utils.py
 
 Hybrid reranking utility class `HybridReranker`. Vector-DB-agnostic, takes generic `list[tuple[Document, float]]` as input.
@@ -419,8 +440,10 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver (thread_id = session_id)
    │         └─ with_llm_retry (3x exponential backoff)
    │
    └─ ③ tools node (loops when there are tool_calls)
-         └─ ToolNode (executes custom tools)
-              └─ back to agent node
+         └─ ToolNode (unified tool execution)
+              ├─ Local tools (agent_tools.py) — calculator, etc.
+              └─ MCP tools (mcp_client.py) — calls external MCP services via SSE (e.g. Spring Boot)
+                   └─ back to agent node
 ```
 
 ---
@@ -435,8 +458,11 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver (thread_id = session_id)
 - [x] **Local calculator tool** — Agent integrates calculator local tool (AST-safe evaluation, supports +-*/ and nested expressions), with auto-retry on tool errors (max 2 retries)
 - [x] **Frontend router refactor** — Introduced vue-router, split into RAG chat / Agent chat pages, history mode, top pill-style switcher
 - [x] **RAG similarity threshold** — Added similarity_score_threshold=0.3 to vector retrieval, filtering low-relevance documents to reduce noisy context
-- [ ] **LangFuse integration** — Integrate LangFuse observability platform to trace full LLM call chains, RAG retrieval, and Agent tool execution, with latency/cost/quality analytics
-- [ ] **Spring Boot MCP tool integration** — Bridge Spring Boot backend services via MCP (Model Context Protocol), expose Java-side business capabilities (database, cache, business APIs) to the Agent as tools
+- [x] **Langfuse integration** — Integrated Langfuse observability platform, Docker Compose self-hosted 6-service cluster, Python SDK v4 with CallbackHandler, full pipeline tracing for RAG retrieval / LLM calls / Agent tool execution, graceful degradation without affecting main flow
+- [x] **Spring Boot MCP tool integration** — Bridge Spring Boot backend services via MCP (Model Context Protocol), expose Java-side business capabilities (database, cache, business APIs) to the Agent as tools
+  - [x] langchain-mcp-adapters adapter, MCP over SSE tools auto-converted to LangChain BaseTool
+  - [x] mcp_client.py wrapper, multi-service config, API Key auth, configurable timeout
+  - [x] Graceful degradation: MCP disabled / SDK missing / service unreachable — Agent starts normally with only local tools
 - [ ] **Persistent memory** — Migrate session history from in-memory to persistent storage (SQLite / Redis), survive restarts
 
 ---

@@ -29,6 +29,14 @@ uvicorn>=0.30.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 
+# ---------- MCP Integration ----------
+# langchain-mcp-adapters 0.1.x 依赖 mcp 1.x，与 mcp 2.x API 不兼容
+langchain-mcp-adapters>=0.1.0,<0.2.0
+mcp>=1.0.0,<2.0.0
+# cryptography 是 mcp -> pyjwt 的传递依赖，50+ 版本需要 OpenSSL 3.2+，
+# 与常见系统/conda 环境的 OpenSSL 3.0 不兼容，锁定在兼容范围内
+cryptography>=41.0.0,<43.0.0
+
 # ---------- Utilities ----------
 python-dotenv>=1.0.0
 

@@ -94,3 +94,21 @@ class AgentError(RAGBaseException):
     code = "AGENT_ERROR"
     message = "Agent 执行异常"
     status_code = 500
+
+
+class MCPError(RAGBaseException):
+    code = "MCP_ERROR"
+    message = "MCP 服务异常"
+    status_code = 502
+
+
+class MCPConnectionError(MCPError):
+    code = "MCP_CONNECTION_ERROR"
+    message = "MCP 服务连接失败"
+    status_code = 502
+
+
+class MCPToolCallError(MCPError):
+    code = "MCP_TOOL_CALL_ERROR"
+    message = "MCP 工具调用失败"
+    status_code = 502

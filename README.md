@@ -50,7 +50,8 @@ my/
 ├── my_rag.py                  # RAG 核心业务逻辑（ChromaDB 检索）
 ├── my_chat.py                 # 普通聊天 LLM 封装（带重试 + 兜底）
 ├── my_agent.py                # LangGraph Agent（RAG 节点 + ReAct 工具循环）
-├── agent_tools.py             # Agent 自定义工具注册辅助
+├── agent_tools.py             # Agent 本地工具工厂函数
+├── mcp_client.py              # MCP 客户端封装（桥接外部 MCP 服务工具）
 ├── rag_utils.py               # RAG 工具类（HybridReranker 混合重排）
 ├── langfuse_setup.py          # Langfuse 监控集成（CallbackHandler 工厂 + 降级兜底）
 ├── exceptions.py              # 分层异常体系
@@ -95,6 +96,7 @@ my/
 | 向量数据库 | ChromaDB | 轻量级本地向量存储 |
 | 大语言模型 | DeepSeek V4 (Flash / Pro) | 支持前端动态切换，OpenAI 兼容接口 |
 | 可观测性 | Langfuse | LLM 调用追踪、RAG 链路监控、Agent 工具执行可视化 |
+| MCP 协议 | langchain-mcp-adapters + mcp SDK | 桥接外部 MCP 服务（如 Spring Boot）的工具到 Agent |
 | Web 框架 | FastAPI | 高性能异步 HTTP 服务 |
 | 前端框架 | Vue 3 + Vite + vue-router | 聊天界面，双页面路由 |
 | UI 组件库 | Arco Design Vue | 基础组件 |
@@ -147,6 +149,12 @@ TRANSFORMERS_OFFLINE=1
 LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 LANGFUSE_HOST=http://localhost:3000
+
+# MCP 服务配置（可选，桥接外部 MCP 服务的工具到 Agent）
+MCP_ENABLED=true
+MCP_SPRINGBOOT_URL=http://localhost:8080/mcp/sse
+MCP_SPRINGBOOT_TIMEOUT=10
+MCP_SPRINGBOOT_API_KEY=
 ```
 
 ### 4. 安装前端依赖
@@ -381,6 +389,16 @@ OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 - 提供 `chat()` / `chat_stream()` / `get_history()` / `clear_history()`
 - 支持通过 `extra_tools` 参数绑定自定义 LangChain Tools
 
+### mcp_client.py
+
+MCP（Model Context Protocol）客户端封装模块。桥接外部 MCP over SSE 服务（如 Spring Boot 后端）的工具到 Agent，使 LLM 可以调用外部业务系统的能力。
+
+- `load_all_mcp_tools()` — 加载所有已配置 MCP 服务的工具，返回 `list[BaseTool]`
+- `load_mcp_tools_for_service(name)` — 加载单个 MCP 服务的工具
+- `shutdown_mcp_clients()` — 关闭连接（供 FastAPI shutdown 钩子调用）
+- **优雅降级**：`MCP_ENABLED=false` / SDK 未安装 / 配置缺失 / 连接失败，均返回空工具列表，Agent 正常启动不中断
+- 工具通过 `extra_tools` 参数注入 `MyAgent`，与本地工具（calculator）完全等价，统一走 ToolNode + 错误计数机制
+
 ### langfuse_setup.py
 
 Langfuse 可观测性集成模块。封装 Langfuse CallbackHandler 的创建逻辑，**优雅降级**：未安装 SDK 或缺少环境变量时自动跳过，不影响主流程。
@@ -464,8 +482,10 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
    │         └─ with_llm_retry (3次指数退避)
    │
    └─ ③ tools 节点（有 tool_calls 时循环）
-         └─ ToolNode（执行自定义工具）
-              └─ 回到 agent 节点
+         └─ ToolNode（执行工具，统一入口）
+              ├─ 本地工具（agent_tools.py）—— calculator 等
+              └─ MCP 工具（mcp_client.py）—— 通过 SSE 调用外部 MCP 服务（如 Spring Boot）
+                   └─ 回到 agent 节点
 ```
 
 ---
@@ -588,7 +608,10 @@ LANGFUSE_HOST=http://localhost:3000
   - [x] 普通 RAG 聊天追踪（retriever + LLM chain）
   - [x] Agent 全链路追踪（LangGraph 图级 callback，retrieve + agent + tools 单 trace）
   - [x] 会话维度关联（session_id 透传到 Langfuse trace metadata）
-- [ ] **Spring Boot MCP 工具集成** — 通过 MCP（Model Context Protocol）桥接 Spring Boot 后端服务，将 Java 侧业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent 使用
+- [x] **Spring Boot MCP 工具集成** — 通过 MCP（Model Context Protocol）桥接 Spring Boot 后端服务，将 Java 侧业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent 使用
+  - [x] langchain-mcp-adapters 适配器，MCP over SSE 工具自动转为 LangChain BaseTool
+  - [x] mcp_client.py 封装，支持多服务配置、API Key 认证、超时可配置
+  - [x] 优雅降级：MCP 禁用 / SDK 缺失 / 服务不可达，Agent 均正常启动仅用本地工具
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
 
 ---
