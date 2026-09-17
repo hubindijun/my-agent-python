@@ -1,34 +1,49 @@
 # My RAG & Agent Service
 
-基于 **LangChain + LangGraph + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的智能对话服务，包含 **RAG 检索增强生成** 与 **LangGraph Agent（ReAct 工具调用）** 两套能力。
+基于 **LangChain + LangGraph + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的企业级智能对话服务。内置 **RAG 检索增强生成** 与 **LangGraph Agent（ReAct 工具调用）** 两套对话体系，配套 **Langfuse 全链路可观测性** 与 **MCP 协议工具桥接**能力，可快速对接外部业务系统（如 Spring Boot）。
 
-该项目实现了：
+## 核心特性
 
-### 通用能力
-- 本地 Embedding 模型（BAAI/bge-small-zh-v1.5）生成文本向量
-- ChromaDB 持久化存储和检索向量数据
-- 调用大语言模型（DeepSeek / OpenAI 兼容 API）生成回答
-- **多模型动态切换** — 前端可选 deepseek-v4-flash / deepseek-v4-pro，会话级绑定
-- 流式输出（SSE），支持逐字渲染
-- 多轮对话记忆（服务端 session + 前端 sessionStorage）
-- Vue3 + Arco Design + Tailwind 聊天前端界面（微信风格）
-- 分层异常体系 + 指数退避重试 + 优雅降级兜底
+### 🔍 RAG 检索增强生成
+- 本地 Embedding 模型（BAAI/bge-small-zh-v1.5）生成中文文本向量
+- ChromaDB 持久化向量存储，相似度阈值检索（score_threshold=0.3）过滤低相关文档
+- 独立的 `/chat*` 接口体系，流式输出（SSE）逐字渲染
 
-### RAG 聊天
-- Retriever 根据用户问题召回相关上下文，交由 LLM 生成最终回答
-- 独立的 `/chat*` 接口体系，稳定可靠
-
-### LangGraph Agent
-- 基于 LangGraph StateGraph 构建的智能体，RAG 作为图的第一个节点
-- ReAct 模式的工具调用循环，支持绑定自定义 Tools
-- MemorySaver 持久化会话状态，支持断点续聊
+### 🤖 LangGraph Agent 智能体
+- 基于 LangGraph StateGraph 构建，图结构：`retrieve → agent ↔ tools → END`
+- ReAct 模式工具调用循环，内置 RAG 检索节点 + 工具错误自动重试（最多 2 次）
+- 支持**本地工具**（calculator 等）与 **MCP 外部工具**（Spring Boot 等）双层工具体系
 - 独立的 `/agent/chat*` 接口体系，与普通 RAG 完全隔离
-- 自有 LLM 实例，便于后续扩展子 Agent、多模型、复杂图结构
+
+### 🔌 MCP 工具桥接（Spring Boot 集成）
+- 通过 MCP (Model Context Protocol) over SSE 桥接外部业务系统
+- 将 Spring Boot 等后端服务的业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent
+- 优雅降级：服务不可用时自动跳过，Agent 正常运行仅使用本地工具
+- 多服务支持、API Key 认证、超时可配置，零侵入 Agent 核心代码
+
+### 📊 Langfuse 全链路可观测
+- Docker Compose 自托管 6 服务集群（Web + Worker + Postgres + ClickHouse + Redis + MinIO）
+- 追踪每次 LLM 调用的输入/输出、Token 用量、延迟
+- 可视化 RAG 检索过程与 Agent 工具调用链路
+- 优雅降级：未配置或 SDK 不可用时自动跳过，不影响主流程
+
+### 💬 前端 & 交互
+- Vue3 + Arco Design + Tailwind，微信风格聊天界面
+- 双页面路由：`/` RAG 问答 / `/agent` Agent 对话，顶部滑动切换
+- 多模型动态切换（deepseek-v4-flash / deepseek-v4-pro），会话级绑定
+- 流式逐字渲染 + 光标闪烁，会话历史存储于 sessionStorage
+
+### 🛡️ 可靠性保障
+- 分层异常体系（RAGBaseException 根类，10+ 子类细分错误类型）
+- LLM 调用指数退避重试（3 次，可重试错误：限流/超时/服务端/连接）
+- 兜底降级机制：LLM 不可用时返回友好提示，服务不中断
+- 本地 Embedding 离线加载，启动不依赖外部网络
 
 ---
 
 ## 目录
 
+- [核心特性](#核心特性)
 - [项目结构](#项目结构)
 - [技术栈](#技术栈)
 - [环境要求](#环境要求)

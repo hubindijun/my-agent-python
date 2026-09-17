@@ -1,34 +1,49 @@
 # My RAG & Agent Service
 
-An intelligent conversational service built with **LangChain + LangGraph + Local Embedding + ChromaDB + FastAPI + Vue3**, featuring both **RAG (Retrieval Augmented Generation)** and **LangGraph Agent (ReAct tool calling)** capabilities.
+An enterprise-grade intelligent conversational service built with **LangChain + LangGraph + Local Embedding + ChromaDB + FastAPI + Vue3**. Includes both **RAG (Retrieval Augmented Generation)** and **LangGraph Agent (ReAct tool calling)** capabilities, with **Langfuse full-stack observability** and **MCP protocol tool bridging** for quick integration with external business systems (e.g. Spring Boot).
 
-Features:
+## Key Features
 
-### Common Capabilities
-- Local embedding model (BAAI/bge-small-zh-v1.5) for text vectorization
-- ChromaDB for persistent vector storage and retrieval
-- LLM (DeepSeek / OpenAI-compatible API) generates answers
-- **Multi-model dynamic switching** — choose between deepseek-v4-flash / deepseek-v4-pro in the frontend, session-bound
-- Streaming output (SSE) with character-by-character rendering
-- Multi-turn conversation memory (server-side session + frontend sessionStorage)
-- Vue3 + Arco Design + Tailwind chat UI (WeChat-style)
-- Layered exception system + exponential backoff retry + graceful fallback
+### 🔍 RAG (Retrieval Augmented Generation)
+- Local embedding model (BAAI/bge-small-zh-v1.5) for Chinese text vectorization
+- ChromaDB persistent vector store with similarity score threshold (0.3) filtering low-relevance documents
+- Dedicated `/chat*` endpoint family, streaming output (SSE) with character-by-character rendering
 
-### RAG Chat
-- Retriever fetches relevant context based on user queries, LLM generates final answers
-- Dedicated `/chat*` endpoint family, stable and reliable
-
-### LangGraph Agent
-- Agent built on LangGraph StateGraph, with RAG as the first node in the graph
-- ReAct-style tool calling loop, supports binding custom Tools
-- MemorySaver for persistent session state, supports resumable conversations
+### 🤖 LangGraph Agent
+- Built on LangGraph StateGraph, flow: `retrieve → agent ↔ tools → END`
+- ReAct-style tool calling loop with built-in RAG retrieval node and automatic tool error retry (max 2)
+- Dual-layer tool system: **local tools** (calculator, etc.) + **MCP external tools** (Spring Boot, etc.)
 - Dedicated `/agent/chat*` endpoint family, fully isolated from regular RAG
-- Own LLM instance, ready for future extension: sub-agents, multi-model, complex graph structures
+
+### 🔌 MCP Tool Bridging (Spring Boot Integration)
+- Bridges external business systems via MCP (Model Context Protocol) over SSE
+- Exposes backend service capabilities (database, cache, business APIs) as tools for the Agent
+- Graceful degradation: automatically falls back when service is unreachable, Agent runs normally with local tools only
+- Multi-service support, API Key authentication, configurable timeout, zero intrusion to Agent core code
+
+### 📊 Langfuse Full-Stack Observability
+- Docker Compose self-hosted 6-service cluster (Web + Worker + Postgres + ClickHouse + Redis + MinIO)
+- Traces every LLM call: input/output, token usage, latency
+- Visualizes RAG retrieval process and Agent tool execution flow
+- Graceful degradation: auto-skips when unconfigured or SDK unavailable, no impact on main flow
+
+### 💬 Frontend & UX
+- Vue3 + Arco Design + Tailwind, WeChat-style chat interface
+- Dual-page routing: `/` RAG chat / `/agent` Agent chat, top pill-style switcher
+- Multi-model dynamic switching (deepseek-v4-flash / deepseek-v4-pro), session-bound
+- Streaming character-by-character rendering with cursor blink, history stored in sessionStorage
+
+### 🛡️ Reliability
+- Layered exception system (RAGBaseException root, 10+ subclasses for detailed error types)
+- LLM exponential backoff retry (3x, retryable: rate limit / timeout / server / connection)
+- Fallback mechanism: friendly response when LLM unavailable, service never breaks
+- Local embedding offline loading, no external network dependency on startup
 
 ---
 
 ## Table of Contents
 
+- [Key Features](#key-features)
 - [Project Structure](#project-structure)
 - [Tech Stack](#tech-stack)
 - [Requirements](#requirements)
