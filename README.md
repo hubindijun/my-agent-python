@@ -62,17 +62,23 @@
 ```
 my/
 ├── app_server.py              # FastAPI 服务入口（普通聊天 + Agent 接口）
-├── my_rag.py                  # RAG 核心业务逻辑（ChromaDB 检索）
-├── my_chat.py                 # 普通聊天 LLM 封装（带重试 + 兜底）
-├── my_agent.py                # LangGraph Agent（RAG 节点 + ReAct 工具循环）
-├── agent_tools.py             # Agent 本地工具工厂函数
-├── mcp_client.py              # MCP 客户端封装（桥接外部 MCP 服务工具）
-├── rag_utils.py               # RAG 工具类（HybridReranker 混合重排）
-├── langfuse_setup.py          # Langfuse 监控集成（CallbackHandler 工厂 + 降级兜底）
-├── exceptions.py              # 分层异常体系
-├── retry_utils.py             # LLM 调用重试 + 兜底装饰器
 ├── pre_load_rag_index.py      # 向量数据库初始化脚本
 ├── main.py                    # 命令行测试入口
+│
+├── core/                      # 核心领域层
+│   ├── my_rag.py              # RAG 核心服务（ChromaDB 检索）
+│   ├── my_chat.py             # LLM 聊天封装（带重试 + 兜底）
+│   ├── my_agent.py            # LangGraph Agent（RAG 节点 + ReAct 工具循环）
+│   └── rag_utils.py           # 混合重排工具（HybridReranker）
+│
+├── tools/                     # Agent 工具层
+│   ├── agent_tools.py         # 本地工具工厂函数（calculator 等）
+│   └── mcp_client.py          # MCP 客户端封装（桥接外部 MCP 服务工具）
+│
+├── infra/                     # 基础设施层
+│   ├── exceptions.py          # 分层异常体系
+│   ├── retry_utils.py         # LLM 调用重试 + 兜底装饰器
+│   └── langfuse_setup.py      # Langfuse 监控集成（CallbackHandler 工厂 + 降级兜底）
 │
 ├── chroma_db/                 # Chroma 向量数据库文件（运行后生成）
 ├── embeddings/                # 本地 Embedding 模型缓存（运行后自动下载）
@@ -345,7 +351,9 @@ Agent 流式对话（SSE）。事件格式与 `/chat/stream` 对齐，额外支�
 
 ## 核心模块说明
 
-### app_server.py
+### 入口文件
+
+#### app_server.py
 
 FastAPI HTTP 服务入口。接收 HTTP 请求，调用 MyRag 服务处理业务逻辑，返回 JSON 或 SSE 流式结果。
 
@@ -354,7 +362,17 @@ FastAPI HTTP 服务入口。接收 HTTP 请求，调用 MyRag 服务处理业务
 - 三层全局异常处理器：RAGBaseException / 校验异常 / 兜底异常
 - SSE 事件为 JSON 结构化格式（`session` / `text` / `fallback` / `error` / `done`）
 
-### my_rag.py
+#### pre_load_rag_index.py
+
+向量数据库初始化脚本。使用 `RecursiveCharacterTextSplitter`（中文分隔符，chunk_size=200，overlap=20）分割文档并写入 ChromaDB。
+
+#### main.py
+
+CLI 快速测试入口，验证 RAG 链路是否正常。
+
+### core/ — 核心领域层
+
+#### core/my_rag.py
 
 RAG 核心服务。主要流程：
 1. 接收用户 query + model
@@ -365,7 +383,7 @@ RAG 核心服务。主要流程：
 
 提供 `query()`（一次性）和 `query_stream()`（流式）两个方法，均返回 `(answer, is_fallback)` 元组。
 
-### my_chat.py
+#### core/my_chat.py
 
 大语言模型封装模块。支持多模型动态切换，按模型名缓存 `ChatOpenAI` 实例。
 
@@ -377,22 +395,7 @@ RAG 核心服务。主要流程：
 所有 LLM 调用使用指数退避重试装饰器（3次），鉴权错误不重试。
 OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 
-### exceptions.py
-
-分层异常体系。根类 `RAGBaseException`（含 code / message / status_code / detail）。
-
-- LLM 类：`LLMError` → `LLMAuthError` / `LLMRateLimitError` / `LLMServerError` / `LLMTimeoutError` / `LLMConnectionError`
-- 检索类：`RetrieverError` → `VectorStoreInitError` / `EmbeddingModelError`
-- 其他：`ValidationError` / `SessionError`
-
-### retry_utils.py
-
-重试与降级工具。
-
-- `with_llm_retry` / `with_llm_retry_stream`：指数退避重试（3次，抖动），可重试错误：限流 / 服务端 / 超时 / 连接
-- `with_fallback` / `with_fallback_stream`：捕获 `LLMError` 返回兜底文案
-
-### my_agent.py
+#### core/my_agent.py
 
 基于 LangGraph 的智能体。**完全独立于 MyChat**，自有 LLM 实例，便于后续演化（子 agent、多模型、复杂图结构）。
 
@@ -404,7 +407,23 @@ OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
 - 提供 `chat()` / `chat_stream()` / `get_history()` / `clear_history()`
 - 支持通过 `extra_tools` 参数绑定自定义 LangChain Tools
 
-### mcp_client.py
+#### core/rag_utils.py
+
+混合重排工具类 `HybridReranker`。与向量库无关，输入为通用 `list[tuple[Document, float]]`。
+
+支持两种融合策略：
+- **weighted**：min-max 归一化后按权重加权求和（默认）
+- **rrf**：Reciprocal Rank Fusion，基于排名倒数，不依赖分数绝对值
+
+当前未集成到 MyRag 中，留待后续混合检索使用。
+
+### tools/ — Agent 工具层
+
+#### tools/agent_tools.py
+
+Agent 本地工具工厂函数。当前包含 `make_calculator_tool()`（AST 安全解析，支持加减乘除与嵌套表达式，失败抛异常）。新增本地工具时写新的工厂函数，在 `app_server.py` 的 `local_tools` 列表中追加即可。
+
+#### tools/mcp_client.py
 
 MCP（Model Context Protocol）客户端封装模块。桥接外部 MCP over SSE 服务（如 Spring Boot 后端）的工具到 Agent，使 LLM 可以调用外部业务系统的能力。
 
@@ -414,7 +433,24 @@ MCP（Model Context Protocol）客户端封装模块。桥接外部 MCP over SSE
 - **优雅降级**：`MCP_ENABLED=false` / SDK 未安装 / 配置缺失 / 连接失败，均返回空工具列表，Agent 正常启动不中断
 - 工具通过 `extra_tools` 参数注入 `MyAgent`，与本地工具（calculator）完全等价，统一走 ToolNode + 错误计数机制
 
-### langfuse_setup.py
+### infra/ — 基础设施层
+
+#### infra/exceptions.py
+
+分层异常体系。根类 `RAGBaseException`（含 code / message / status_code / detail）。
+
+- LLM 类：`LLMError` → `LLMAuthError` / `LLMRateLimitError` / `LLMServerError` / `LLMTimeoutError` / `LLMConnectionError`
+- 检索类：`RetrieverError` → `VectorStoreInitError` / `EmbeddingModelError`
+- 其他：`ValidationError` / `SessionError` / `AgentError` / `MCPError`
+
+#### infra/retry_utils.py
+
+重试与降级工具。
+
+- `with_llm_retry` / `with_llm_retry_stream`：指数退避重试（3次，抖动），可重试错误：限流 / 服务端 / 超时 / 连接
+- `with_fallback` / `with_fallback_stream`：捕获 `LLMError` 返回兜底文案
+
+#### infra/langfuse_setup.py
 
 Langfuse 可观测性集成模块。封装 Langfuse CallbackHandler 的创建逻辑，**优雅降级**：未安装 SDK 或缺少环境变量时自动跳过，不影响主流程。
 
@@ -426,20 +462,6 @@ Langfuse 可观测性集成模块。封装 Langfuse CallbackHandler 的创建逻
 集成范围：
 - **普通 RAG 聊天**：retriever 检索 + LLM 链调用分别上报（2 条 trace）
 - **Agent 聊天**：LangGraph 图级 callback 自动追踪所有节点（retrieve + agent LLM + tools），单条完整 trace
-
-### rag_utils.py
-
-混合重排工具类 `HybridReranker`。与向量库无关，输入为通用 `list[tuple[Document, float]]`。
-
-支持两种融合策略：
-- **weighted**：min-max 归一化后按权重加权求和（默认）
-- **rrf**：Reciprocal Rank Fusion，基于排名倒数，不依赖分数绝对值
-
-当前未集成到 MyRag 中，留待后续混合检索使用。
-
-### pre_load_rag_index.py
-
-向量数据库初始化脚本。使用 `RecursiveCharacterTextSplitter`（中文分隔符，chunk_size=200，overlap=20）分割文档并写入 ChromaDB。
 
 ---
 

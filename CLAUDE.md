@@ -94,18 +94,44 @@ index.html → main.js → App.vue (顶部布局 + 模型选择 + 清空)
 
 Agent 页面忽略 `tool_call` / `tool_result` 事件，只渲染 `text` 事件，体验与普通聊天一致。
 
-### 核心模块
+### 目录结构与核心模块
 
-- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 和 `MyAgent` 单例（Agent 绑定 calculator 工具）。三层全局异常处理器。
-- **`my_rag.py`** — `MyRag` 类。Chroma 向量库，retriever 使用 `similarity_score_threshold`（k=2, threshold=0.3），低于阈值的文档被过滤。`query()` / `query_stream()` 返回 `(结果, is_fallback)`。LLM 调用外层包 `with_fallback`。
-- **`my_chat.py`** — `MyChat` 类。封装 `ChatOpenAI`（流式）。方法带 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。`_map_openai_error()` 映射 OpenAI 异常到自定义 `LLMError` 子类。
-- **`my_agent.py`** — `MyAgent` 类。LangGraph StateGraph：retrieve 节点（调用 MyRag._retrieve）+ agent 节点（自有 LLM + tools）+ `_tools_node` 包装层（错误计数，MAX_TOOL_RETRIES=2 次后强制结束）。MemorySaver 做 checkpoint。完全独立于 MyChat，自有 LLM 实例。
-- **`agent_tools.py`** — Agent 本地工具工厂函数。当前只有 `make_calculator_tool()`（AST 安全解析，支持加减乘除与嵌套表达式，失败抛异常）。新增本地工具时写新的工厂函数，在 `app_server.py` 的 `local_tools` 列表中追加即可。
-- **`mcp_client.py`** — MCP 客户端封装。通过 `langchain-mcp-adapters` 将 MCP over SSE 服务的工具桥接到 Agent。优雅降级：`MCP_ENABLED=false` / SDK 缺失 / 配置缺失 / 服务不可达，均返回空工具列表，Agent 正常启动。支持多服务配置（`_SERVICES` 列表 + `.env` 中 `MCP_<NAME>_URL/TIMEOUT/API_KEY`）。每次工具调用独立建立 SSE 连接，天然支持重连。
-- **`langfuse_setup.py`** — Langfuse 可观测性集成。CallbackHandler 工厂，优雅降级（SDK 未装或配置缺失时返回 None，不影响主流程）。
-- **`rag_utils.py`** — `HybridReranker` 混合重排工具类。支持 weighted 和 rrf 两种策略。尚未集成到 MyRag 或 MyAgent 中。
-- **`exceptions.py`** — 分层异常体系，根类 `RAGBaseException`。
-- **`retry_utils.py`** — LLM 调用重试 + 兜底装饰器。可重试错误：限流 / 服务端 / 超时 / 连接（鉴权错误不重试）。默认 3 次指数退避。
+项目按功能分为三层，入口文件留在根目录。
+
+```
+my/
+├── app_server.py              # 入口：FastAPI 服务
+├── main.py                    # 入口：CLI 测试
+├── pre_load_rag_index.py      # 入口：向量库初始化脚本
+│
+├── core/                      # 核心领域层
+│   ├── my_rag.py              # RAG 核心服务（MyRag）
+│   ├── my_chat.py             # LLM 聊天封装（MyChat）
+│   ├── my_agent.py            # LangGraph Agent（MyAgent）
+│   └── rag_utils.py           # 混合重排工具（HybridReranker）
+│
+├── tools/                     # Agent 工具层
+│   ├── agent_tools.py         # 本地工具工厂（calculator 等）
+│   └── mcp_client.py          # MCP 外部工具桥接（Spring Boot 等）
+│
+└── infra/                     # 基础设施层
+    ├── exceptions.py          # 分层异常体系
+    ├── retry_utils.py         # 重试与降级装饰器
+    └── langfuse_setup.py      # Langfuse 可观测性集成
+```
+
+**各模块说明**：
+
+- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 和 `MyAgent` 单例（Agent 绑定本地 + MCP 工具）。三层全局异常处理器。
+- **`core/my_rag.py`** — `MyRag` 类。Chroma 向量库，retriever 使用 `similarity_score_threshold`（k=2, threshold=0.3），低于阈值的文档被过滤。`query()` / `query_stream()` 返回 `(结果, is_fallback)`。LLM 调用外层包 `with_fallback`。
+- **`core/my_chat.py`** — `MyChat` 类。封装 `ChatOpenAI`（流式）。方法带 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。`_map_openai_error()` 映射 OpenAI 异常到自定义 `LLMError` 子类。
+- **`core/my_agent.py`** — `MyAgent` 类。LangGraph StateGraph：retrieve 节点（调用 MyRag._retrieve）+ agent 节点（自有 LLM + tools）+ `_tools_node` 包装层（错误计数，MAX_TOOL_RETRIES=2 次后强制结束）。MemorySaver 做 checkpoint。完全独立于 MyChat，自有 LLM 实例。
+- **`core/rag_utils.py`** — `HybridReranker` 混合重排工具类。支持 weighted 和 rrf 两种策略。尚未集成到 MyRag 或 MyAgent 中。
+- **`tools/agent_tools.py`** — Agent 本地工具工厂函数。当前只有 `make_calculator_tool()`（AST 安全解析，支持加减乘除与嵌套表达式，失败抛异常）。新增本地工具时写新的工厂函数，在 `app_server.py` 的 `local_tools` 列表中追加即可。
+- **`tools/mcp_client.py`** — MCP 客户端封装。通过 `langchain-mcp-adapters` 将 MCP over SSE 服务的工具桥接到 Agent。优雅降级：`MCP_ENABLED=false` / SDK 缺失 / 配置缺失 / 服务不可达，均返回空工具列表，Agent 正常启动。支持多服务配置（`_SERVICES` 列表 + `.env` 中 `MCP_<NAME>_URL/TIMEOUT/API_KEY`）。每次工具调用独立建立 SSE 连接，天然支持重连。
+- **`infra/exceptions.py`** — 分层异常体系，根类 `RAGBaseException`。
+- **`infra/retry_utils.py`** — LLM 调用重试 + 兜底装饰器。可重试错误：限流 / 服务端 / 超时 / 连接（鉴权错误不重试）。默认 3 次指数退避。
+- **`infra/langfuse_setup.py`** — Langfuse 可观测性集成。CallbackHandler 工厂，优雅降级（SDK 未装或配置缺失时返回 None，不影响主流程）。
 
 ### SSE 事件格式
 
@@ -133,12 +159,12 @@ Agent 页面忽略 `tool_call` / `tool_result` 事件，只渲染 `text` 事件�
 工具分两类，注册方式不同：
 
 **本地工具**（Python 代码实现，如 calculator）：
-1. 在 `agent_tools.py` 中新增 `make_xxx_tool()` 工厂函数，返回 `BaseTool`
+1. 在 `tools/agent_tools.py` 中新增 `make_xxx_tool()` 工厂函数，返回 `BaseTool`
 2. 在 `app_server.py` 的 `local_tools` 列表中追加新工具
 3. 工具失败应**抛异常**（不要返回错误字符串）——ToolNode 会自动捕获并生成 `is_error=True` 的 ToolMessage，`_tools_node` 计入错误计数
 
 **MCP 工具**（外部 MCP over SSE 服务提供，如 Spring Boot）：
-1. 在 `mcp_client.py` 的 `_SERVICES` 列表中追加服务名（大写，如 `"SPRINGBOOT"`）
+1. 在 `tools/mcp_client.py` 的 `_SERVICES` 列表中追加服务名（大写，如 `"SPRINGBOOT"`）
 2. 在 `.env` 中添加对应配置：
    - `MCP_<NAME>_URL` — MCP SSE 端点地址（必填）
    - `MCP_<NAME>_TIMEOUT` — 连接超时秒数（可选，默认 10）

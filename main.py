@@ -1,4 +1,4 @@
-from my_rag import MyRag
+from core.my_rag import MyRag
 
 
 rag = MyRag()

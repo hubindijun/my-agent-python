@@ -13,13 +13,13 @@ load_dotenv()
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
-from my_chat import MyChat
-from exceptions import (
+from core.my_chat import MyChat
+from infra.exceptions import (
     RetrieverError,
     VectorStoreInitError,
     EmbeddingModelError,
 )
-from retry_utils import with_fallback, with_fallback_stream, FALLBACK_MESSAGE
+from infra.retry_utils import with_fallback, with_fallback_stream, FALLBACK_MESSAGE
 
 logger = logging.getLogger(__name__)
 

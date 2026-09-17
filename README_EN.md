@@ -62,17 +62,23 @@ An enterprise-grade intelligent conversational service built with **LangChain + 
 ```
 my/
 ├── app_server.py              # FastAPI server entry (regular chat + Agent endpoints)
-├── my_rag.py                  # RAG core logic (ChromaDB retrieval)
-├── my_chat.py                 # Regular chat LLM wrapper (with retry + fallback)
-├── my_agent.py                # LangGraph Agent (RAG node + ReAct tool loop)
-├── agent_tools.py             # Agent local tool factory functions
-├── mcp_client.py              # MCP client wrapper (bridge external MCP service tools)
-├── rag_utils.py               # RAG utilities (HybridReranker)
-├── langfuse_setup.py          # Langfuse observability integration (CallbackHandler factory + graceful degradation)
-├── exceptions.py              # Hierarchical exception system
-├── retry_utils.py             # LLM retry + fallback decorators
 ├── pre_load_rag_index.py      # Vector DB initialization script
 ├── main.py                    # CLI test entry point
+│
+├── core/                      # Core domain layer
+│   ├── my_rag.py              # RAG core service (ChromaDB retrieval)
+│   ├── my_chat.py             # LLM chat wrapper (with retry + fallback)
+│   ├── my_agent.py            # LangGraph Agent (RAG node + ReAct tool loop)
+│   └── rag_utils.py           # Hybrid reranking utility (HybridReranker)
+│
+├── tools/                     # Agent tool layer
+│   ├── agent_tools.py         # Local tool factory functions (calculator, etc.)
+│   └── mcp_client.py          # MCP client wrapper (bridges external MCP service tools)
+│
+├── infra/                     # Infrastructure layer
+│   ├── exceptions.py          # Hierarchical exception system
+│   ├── retry_utils.py         # LLM retry + fallback decorators
+│   └── langfuse_setup.py      # Langfuse observability integration (CallbackHandler factory + graceful degradation)
 │
 ├── chroma_db/                 # Chroma vector DB files (generated at runtime)
 ├── embeddings/                # Local embedding model cache (auto-downloaded)

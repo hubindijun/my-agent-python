@@ -11,12 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
-from exceptions import RAGBaseException, ValidationError, AgentError
-from my_rag import MyRag
-from my_agent import MyAgent
-from agent_tools import make_calculator_tool
-from langfuse_setup import get_langfuse_handler, build_langchain_metadata
-from mcp_client import load_all_mcp_tools, shutdown_mcp_clients
+from infra.exceptions import RAGBaseException, ValidationError, AgentError
+from core.my_rag import MyRag
+from core.my_agent import MyAgent
+from tools.agent_tools import make_calculator_tool
+from infra.langfuse_setup import get_langfuse_handler, build_langchain_metadata
+from tools.mcp_client import load_all_mcp_tools, shutdown_mcp_clients
 
 ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
 DEFAULT_MODEL = "deepseek-v4-flash"

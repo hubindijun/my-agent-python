@@ -10,7 +10,7 @@ import functools
 import time
 import random
 
-from exceptions import (
+from infra.exceptions import (
     LLMError,
     LLMAuthError,
     LLMRateLimitError,
