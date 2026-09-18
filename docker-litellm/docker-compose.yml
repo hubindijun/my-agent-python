@@ -1,0 +1,99 @@
+# ============================================
+# LiteLLM Proxy 单点部署（Postgres + Redis）
+#
+# 包含 3 个容器：
+#   - postgres:  共享数据库（密钥、成本统计、调用日志）
+#   - redis:     全局限流计数 + 缓存
+#   - litellm:   LiteLLM Proxy 网关 + Web UI
+#
+# 为什么用 Postgres 而非 SQLite：
+#   - 便于后续平滑升级到多实例集群（直接加 litellm 实例 + Nginx 即可）
+#   - 并发性能更好，数据持久化更可靠
+#
+# 为什么用 Redis：
+#   - 限流计数全局维护，单实例重启不丢失计数
+#   - 升级集群时无需额外改造
+#
+# 启动:  docker compose -f docker-compose.litellm.yaml up -d
+# 停止:  docker compose -f docker-compose.litellm.yaml down
+# 日志:  docker compose -f docker-compose.litellm.yaml logs -f
+# UI:    http://localhost:4000/ui
+# ============================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: litellm-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-litellm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-litellm_password}
+      POSTGRES_DB: ${POSTGRES_DB:-litellm}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-litellm} -d ${POSTGRES_DB:-litellm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: litellm-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --save 900 1
+      --save 300 10
+      --save 60 10000
+    volumes:
+      - ./redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: litellm-proxy
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml:ro
+    env_file:
+      - litellm.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-litellm}:${POSTGRES_PASSWORD:-litellm_password}@postgres:5432/${POSTGRES_DB:-litellm}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    command:
+      - --config
+      - /app/config.yaml
+      - --port
+      - "4000"
+      - --detailed_debug
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health/live"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    extra_hosts:
+      # 让容器内能访问宿主机的 Ollama 等服务
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

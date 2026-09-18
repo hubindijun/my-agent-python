@@ -1,6 +1,6 @@
 # My RAG & Agent Service
 
-基于 **LangChain + LangGraph + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的企业级智能对话服务。内置 **RAG 检索增强生成** 与 **LangGraph Agent（ReAct 工具调用）** 两套对话体系，配套 **Langfuse 全链路可观测性** 与 **MCP 协议工具桥接**能力，可快速对接外部业务系统（如 Spring Boot）。
+基于 **LangChain + LangGraph + LiteLLM 网关 + 本地 Embedding + ChromaDB + FastAPI + Vue3** 构建的企业级智能对话服务。内置 **RAG 检索增强生成** 与 **LangGraph Agent（ReAct 工具调用）** 两套对话体系，配套 **LiteLLM 统一网关（多供应商/负载均衡/限流/成本统计）**、**Langfuse 全链路可观测性** 与 **MCP 协议工具桥接**能力，可快速对接外部业务系统（如 Spring Boot）。
 
 ## 核心特性
 
@@ -20,6 +20,14 @@
 - 将 Spring Boot 等后端服务的业务能力（数据库、缓存、业务接口）以工具形式暴露给 Agent
 - 优雅降级：服务不可用时自动跳过，Agent 正常运行仅使用本地工具
 - 多服务支持、API Key 认证、超时可配置，零侵入 Agent 核心代码
+
+### 🌐 LiteLLM 统一网关
+- **多模型 / 多供应商统一接入**：DeepSeek、OpenAI、Anthropic、Ollama 本地模型等，一个接口调用所有供应商
+- **负载均衡与故障转移**：多 API Key 轮询/最少并发策略，自动故障转移，单 key 失败无感切换
+- **双层限流**：按模型（RPM/TPM）+ 按 API Key（并发数），保护配额防止超支
+- **成本统计**：Web UI 实时查看 token 用量和费用，支持按模型/按 key 维度统计
+- **环境变量开关**：`LITELLM_ENABLED` 控制，默认关闭（直连模式），开启后自动切到网关
+- 与现有 Langfuse 监控互补：网关做聚合统计，Langfuse 做链路追踪
 
 ### 📊 Langfuse 全链路可观测
 - Docker Compose 自托管 6 服务集群（Web + Worker + Postgres + ClickHouse + Redis + MinIO）
@@ -53,6 +61,7 @@
 - [前端说明](#前端说明)
 - [核心模块说明](#核心模块说明)
 - [项目调用链路](#项目调用链路)
+- [LiteLLM 网关](#litellm-网关)
 - [Langfuse 监控](#langfuse-监控)
 
 ---
@@ -66,6 +75,8 @@ my/
 ├── main.py                    # 命令行测试入口
 │
 ├── core/                      # 核心领域层
+│   ├── config.py              # 集中配置管理（所有环境变量统一入口）
+│   ├── llm_client.py          # 统一 LLM 客户端（MyChat + MyAgent 共享）
 │   ├── my_rag.py              # RAG 核心服务（ChromaDB 检索）
 │   ├── my_chat.py             # LLM 聊天封装（带重试 + 兜底）
 │   ├── my_agent.py            # LangGraph Agent（RAG 节点 + ReAct 工具循环）
@@ -80,12 +91,22 @@ my/
 │   ├── retry_utils.py         # LLM 调用重试 + 兜底装饰器
 │   └── langfuse_setup.py      # Langfuse 监控集成（CallbackHandler 工厂 + 降级兜底）
 │
+├── scripts/                   # 启动脚本
+│   ├── start-backend.sh       # 后端一键启动（自动激活 conda 环境）
+│   └── start-frontend.sh      # 前端一键启动（自动检查依赖）
+│
+├── docker-litellm/             # LiteLLM 网关（Docker 部署）
+│   ├── docker-compose.yml     # 容器编排（postgres + redis + litellm）
+│   ├── litellm_config.yaml    # 模型/限流/负载均衡配置
+│   ├── litellm.env.example    # 环境变量模板
+│   └── deploy.md              # 部署手册（单点 + 集群）
+│
 ├── chroma_db/                 # Chroma 向量数据库文件（运行后生成）
 ├── embeddings/                # 本地 Embedding 模型缓存（运行后自动下载）
 │
 ├── chat-web/                  # Vue3 前端
 │   ├── src/
-│   │   ├── App.vue            # 顶部布局 + 路由出口
+│   │   ├── App.vue            # 顶部布局 + 路由出口 + 动态模型列表
 │   │   ├── views/             # 页面组件（ChatRAG.vue / ChatAgent.vue）
 │   │   ├── router/index.js    # vue-router 配置
 │   │   ├── main.js
@@ -116,6 +137,7 @@ my/
 | 嵌入模型 | BAAI/bge-small-zh-v1.5 | 中文 Embedding 模型，本地运行 |
 | 向量数据库 | ChromaDB | 轻量级本地向量存储 |
 | 大语言模型 | DeepSeek V4 (Flash / Pro) | 支持前端动态切换，OpenAI 兼容接口 |
+| LLM 网关 | LiteLLM Proxy | 多供应商统一接入、负载均衡、故障转移、限流、成本统计 |
 | 可观测性 | Langfuse | LLM 调用追踪、RAG 链路监控、Agent 工具执行可视化 |
 | MCP 协议 | langchain-mcp-adapters + mcp SDK | 桥接外部 MCP 服务（如 Spring Boot）的工具到 Agent |
 | Web 框架 | FastAPI | 高性能异步 HTTP 服务 |
@@ -157,21 +179,32 @@ pip install -r requirements.txt
 编辑 `.env` 文件：
 
 ```env
-# LLM 配置（默认 DeepSeek，可替换为任意 OpenAI 兼容接口）
+# ===== LLM 配置（默认 DeepSeek，可替换为任意 OpenAI 兼容接口）=====
 OPENAI_API_KEY=你的_api_key
 OPENAI_MODEL=deepseek-chat
 OPENAI_API_BASE=https://api.deepseek.com/v1
 
-# Embedding 模型离线加载（避免启动时访问 HuggingFace）
+# 直连模式模型白名单（逗号分隔）
+ALLOWED_MODELS=deepseek-v4-flash,deepseek-v4-pro
+
+# ===== Embedding 模型离线加载 =====
+# 避免启动时访问 HuggingFace
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 
-# Langfuse 可观测性平台（可选，不配置则不启用监控）
+# ===== LiteLLM 网关（可选，默认关闭，开启后走统一网关）=====
+LITELLM_ENABLED=false
+LITELLM_PROXY_URL=http://localhost:4000/v1
+LITELLM_API_KEY=sk-my-app-proxy-key
+# 应用层重试次数（留空=自动：网关模式 1 次，直连模式 3 次）
+LLM_RETRY_ATTEMPTS=
+
+# ===== Langfuse 可观测性平台（可选，不配置则不启用监控）=====
 LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 LANGFUSE_HOST=http://localhost:3000
 
-# MCP 服务配置（可选，桥接外部 MCP 服务的工具到 Agent）
+# ===== MCP 服务配置（可选，桥接外部 MCP 服务的工具到 Agent）=====
 MCP_ENABLED=true
 MCP_SPRINGBOOT_URL=http://localhost:8080/mcp/sse
 MCP_SPRINGBOOT_TIMEOUT=10
@@ -203,13 +236,33 @@ python pre_load_rag_index.py
 
 ### 第二步：启动后端服务
 
+**方式一：一键启动脚本（推荐）**
+
+```bash
+./scripts/start-backend.sh
+```
+
+自动检测并激活 conda 环境（mylearn），以自动重载模式启动 uvicorn。
+
+**方式二：手动启动**
+
 ```bash
 uvicorn app_server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 第三步：启动前端
 
+**方式一：一键启动脚本（推荐）**
+
 新开一个终端窗口：
+
+```bash
+./scripts/start-frontend.sh
+```
+
+自动检查 Node 环境和依赖，首次启动自动安装 npm 包。
+
+**方式二：手动启动**
 
 ```bash
 cd chat-web
@@ -372,6 +425,25 @@ CLI 快速测试入口，验证 RAG 链路是否正常。
 
 ### core/ — 核心领域层
 
+#### core/config.py
+
+集中配置管理模块。统一从 `.env` 读取所有环境变量，替代散落的 `os.getenv()`。
+
+- `get_settings()` — 获取全局单例 Settings
+- `effective_base_url` / `effective_api_key` — 根据 `LITELLM_ENABLED` 自动切换直连/网关地址
+- `effective_retry_attempts` — 自动判断重试次数（网关模式 1 次，直连模式 3 次）
+- `allowed_models` — 直连模式下的模型白名单（逗号分隔的 env 变量）
+- `validate()` — 启动时校验配置完整性
+
+#### core/llm_client.py
+
+统一 LLM 客户端。`MyChat` 和 `MyAgent` 共享同一个 `LLMClient` 单例，消除重复的 LLM 初始化、缓存和错误映射代码。
+
+- `get_instance()` — 单例模式获取实例
+- `get_llm(model)` — 按模型名懒加载并缓存 `ChatOpenAI` 实例
+- `map_error(e)` — 统一的 OpenAI 异常 → 自定义 `LLMError` 映射
+- 自动从 `Settings` 读取 `effective_base_url` / `effective_api_key`，网关切换对上层透明
+
 #### core/my_rag.py
 
 RAG 核心服务。主要流程：
@@ -385,19 +457,18 @@ RAG 核心服务。主要流程：
 
 #### core/my_chat.py
 
-大语言模型封装模块。支持多模型动态切换，按模型名缓存 `ChatOpenAI` 实例。
+大语言模型封装模块。通过 `LLMClient` 单例获取 ChatOpenAI 实例，支持多模型动态切换。
 
 - `chat(query, model?)` — 普通对话
 - `rag_chat(query, context, model?)` — RAG 对话（一次性）
 - `rag_chat_stream(query, context, history, model?)` — RAG 对话（流式，支持多轮历史）
 
 均使用 LCEL 链式调用：`prompt | llm | StrOutputParser`。
-所有 LLM 调用使用指数退避重试装饰器（3次），鉴权错误不重试。
-OpenAI SDK 异常映射为带类型的 `LLMError` 子类。
+所有 LLM 调用使用指数退避重试装饰器（直连 3 次 / 网关 1 次，自动适配），鉴权错误不重试。
 
 #### core/my_agent.py
 
-基于 LangGraph 的智能体。**完全独立于 MyChat**，自有 LLM 实例，便于后续演化（子 agent、多模型、复杂图结构）。
+基于 LangGraph 的智能体。通过 `LLMClient` 单例与 MyChat 共享 LLM 配置与缓存，图结构独立演化。
 
 图结构：`START → retrieve (RAG) → agent (LLM+tools) ↔ tools → END`
 
@@ -475,6 +546,7 @@ Langfuse 可观测性集成模块。封装 Langfuse CallbackHandler 的创建逻
    ▼
 Vue3 前端 (App.vue)  ← sessionStorage（消息 + session_id + model）
    │  fetch SSE  POST { query, model }
+   │  模型列表从 GET /api/models 动态获取
    ▼
 Vite 代理 /chat → localhost:8000
    │
@@ -487,11 +559,14 @@ MyRag.query_stream(question, history, model)
    ├─ Retriever (Top-K=2)
    │     └─ ChromaDB + BAAI/bge-small-zh-v1.5
    │
-   └─ with_fallback → with_llm_retry (3次指数退避)
+   └─ with_fallback → with_llm_retry（直连 3次 / 网关 1次）
            │
            └─ MyChat.rag_chat_stream()
-                   └─ ChatOpenAI（按模型名缓存实例）
-                         └─ 流式返回
+                   └─ LLMClient.get_llm(model) → ChatOpenAI（共享缓存）
+                         │
+                         ├─ 直连模式：→ DeepSeek API
+                         └─ 网关模式：→ LiteLLM Proxy → 多供应商 / 多 Key
+                                       （负载均衡 + 故障转移 + 限流）
 ```
 
 ### Agent 聊天（/agent/chat/stream）
@@ -515,8 +590,10 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
    │     └─ 调用 MyRag._retrieve() → ChromaDB
    │
    ├─ ② agent 节点
-   │     └─ 自有 ChatOpenAI + bind_tools
-   │         └─ with_llm_retry (3次指数退避)
+   │     └─ LLMClient.get_llm(model) + bind_tools（与 MyChat 共享 LLM 缓存）
+   │         │
+   │         ├─ 直连模式：→ DeepSeek API
+   │         └─ 网关模式：→ LiteLLM Proxy → 多供应商 / 多 Key
    │
    └─ ③ tools 节点（有 tool_calls 时循环）
          └─ ToolNode（执行工具，统一入口）
@@ -527,105 +604,26 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver（thread_id = session_id）
 
 ---
 
-## Langfuse 监控
+## LiteLLM 网关
 
-基于 Langfuse 开源 LLM 工程平台，实现全链路可观测性：追踪每次 LLM 调用的输入/输出、token 用量、延迟，可视化 RAG 检索和 Agent 工具调用过程。
+基于 LiteLLM Proxy 的统一 LLM 网关，支持多供应商接入、负载均衡、故障转移、按模型/按 Key 限流、成本统计。Postgres + Redis 架构，单点部署即可平滑升级为集群。
 
-### 架构
+- 两种模式通过 `LITELLM_ENABLED` 环境变量切换，默认关闭（直连模式）
+- 应用层透明，开启网关只是换了 `base_url` 和 `api_key`，代码零改动
+- 关闭开关立即回到直连模式，1 分钟内回滚
 
-```
-HTTP 请求 → FastAPI 端点
-              └─ _build_langchain_config() → langfuse_setup.py
-                   ├─ CallbackHandler → RunnableConfig.callbacks
-                   └─ metadata → langfuse_trace（name / session_id / user_id）
-                        │
-                        ▼
-                   Langfuse SDK（异步上报）→ Langfuse 平台（Docker 自托管）
-```
+**部署文档：** [`docker-litellm/deploy.md`](docker-litellm/deploy.md) — 包含单点部署、配置说明、限流策略、集群部署、运维命令、数据备份。
 
-- **Agent 路径**：LangGraph 图级 callback 自动传播到所有节点（retrieve / agent / tools），单次请求对应一条完整 trace
-- **RAG 路径**：retriever.invoke 与 chain.invoke 为两次独立 LCEL 调用，对应两条 trace（共享 session_id 可在 UI 中按会话聚合）
+---
 
-### 平台搭建（Docker Compose）
+## Langfuse 可观测性
 
-Langfuse 平台通过 Docker Compose 自托管，配置在 `docker-langfuse/` 目录下。
+基于 Langfuse 的全链路可观测性平台，追踪每次 LLM 调用的输入/输出、token 用量、延迟，可视化 RAG 检索和 Agent 工具调用过程。Docker Compose 自托管 6 服务集群（Web + Worker + Postgres + ClickHouse + Redis + MinIO）。
 
-**服务组成**（6 个容器）：
+- 优雅降级：未配置或 SDK 不可用时自动跳过，不影响主流程
+- Agent 路径：LangGraph 图级 callback 自动传播到所有节点，单次请求一条完整 trace
 
-| 服务 | 作用 | 端口 |
-|------|------|------|
-| langfuse-web | Web UI + API | 3000 |
-| langfuse-worker | 后台任务（事件消费、导出等） | — |
-| postgres | 主数据库 | 5432 |
-| clickhouse | 分析型数据库（事件存储） | 8123 / 9000 |
-| redis | 缓存 + 队列 | 6379 |
-| minio | 对象存储（媒体文件、批量导出） | 9090 / 9091 |
-
-**搭建步骤**：
-
-```bash
-cd docker-langfuse
-
-# 1. 生成密钥并配置 .env（参考下文密钥清单）
-# 2. 拉取镜像
-docker compose pull
-
-# 3. 后台启动
-docker compose up -d
-
-# 4. 等待所有服务 healthy（约 2-3 分钟）
-docker compose ps
-
-# 5. 查看日志
-docker compose logs -f langfuse-web
-```
-
-启动成功后访问 `http://localhost:3000`，注册管理员账号并创建项目，在项目设置中获取 Public Key 和 Secret Key。
-
-**密钥生成**（在 `.env` 中配置）：
-
-```bash
-# 生成随机密钥示例
-openssl rand -hex 16   # SALT
-openssl rand -hex 32   # POSTGRES_PASSWORD / ENCRYPTION_KEY / NEXTAUTH_SECRET / CLICKHOUSE_PASSWORD 等
-```
-
-需要配置的密钥清单：
-- `POSTGRES_PASSWORD` / `DATABASE_URL`（密码需一致）
-- `SALT`、`ENCRYPTION_KEY`、`NEXTAUTH_SECRET`
-- `CLICKHOUSE_PASSWORD`
-- `REDIS_AUTH`
-- `MINIO_ROOT_PASSWORD`（3 个 S3 SECRET_ACCESS_KEY 与其一致）
-
-> **国内镜像加速**：如直接拉取镜像超时，在 Docker Desktop 配置镜像加速器，并将 `docker-compose.yml` 中的镜像地址从 `docker.langfuse.com/langfuse/...` 改为 `langfuse/...`（走 Docker Hub）。
-
-### Python 项目集成
-
-**1. 安装依赖**
-
-```bash
-pip install langfuse
-```
-
-> 国内可用阿里云镜像：`pip install langfuse -i https://mirrors.aliyun.com/pypi/simple/`
-
-**2. 配置环境变量**
-
-在项目 `.env` 中添加（来自 Langfuse 项目设置页面）：
-
-```env
-LANGFUSE_PUBLIC_KEY=pk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-LANGFUSE_SECRET_KEY=sk-lf-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-LANGFUSE_HOST=http://localhost:3000
-```
-
-**3. 验证**
-
-启动后端服务后，在前端发送一条消息，然后打开 Langfuse Web UI（`http://localhost:3000`），在 Traces 页面应能看到对应的追踪记录：
-- 普通聊天：VectorStoreRetriever + RunnableSequence 两条 trace
-- Agent 聊天：单条 trace，包含 retrieve / agent / tools 等多个 span
-
-**降级策略**：未配置 `LANGFUSE_*` 环境变量或 SDK 不可用时，`langfuse_setup.py` 自动返回 None，所有接口正常工作，无任何报错。
+**部署文档：** [`docker-langfuse/deploy.md`](docker-langfuse/deploy.md) — 包含平台搭建、Python 集成、验证方法、运维命令、数据备份。
 
 ---
 
@@ -649,6 +647,15 @@ LANGFUSE_HOST=http://localhost:3000
   - [x] langchain-mcp-adapters 适配器，MCP over SSE 工具自动转为 LangChain BaseTool
   - [x] mcp_client.py 封装，支持多服务配置、API Key 认证、超时可配置
   - [x] 优雅降级：MCP 禁用 / SDK 缺失 / 服务不可达，Agent 均正常启动仅用本地工具
+- [x] **LiteLLM 统一网关集成** — 接入 LiteLLM Proxy 作为 LLM 网关，支持多供应商统一接入、负载均衡、故障转移、限流、成本统计
+  - [x] 统一 LLM 客户端（core/llm_client.py），消除 MyChat / MyAgent 重复代码
+  - [x] 集中配置模块（core/config.py），替代散落的 os.getenv
+  - [x] 环境变量开关（LITELLM_ENABLED），默认关闭直连模式，零回归风险
+  - [x] 动态模型列表：后端 GET /api/models + 前端动态加载，网关模式下从 Proxy 拉取
+  - [x] Docker Compose 部署，配置模板含 DeepSeek（启用）+ Ollama/Claude/GPT（注释模板）
+  - [x] 双层限流：按模型 RPM/TPM + 按 API Key 并发数
+  - [x] 两层重试：网关层 3 次（主）+ 应用层 1 次（备）
+- [x] **启动脚本** — scripts/start-backend.sh + scripts/start-frontend.sh，一键启动前后端开发服务
 - [ ] **持久化记忆功能** — 将会话历史从内存迁移到持久化存储（如 SQLite / Redis），支持跨重启恢复
 
 ---

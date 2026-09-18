@@ -1,6 +1,9 @@
 # Environment
 .env
 docker-langfuse/.env
+docker-litellm/litellm.env
+docker-litellm/postgres_data/
+docker-litellm/redis_data/
 
 # Python
 __pycache__/

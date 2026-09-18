@@ -1,6 +1,6 @@
 # My RAG & Agent Service
 
-An enterprise-grade intelligent conversational service built with **LangChain + LangGraph + Local Embedding + ChromaDB + FastAPI + Vue3**. Includes both **RAG (Retrieval Augmented Generation)** and **LangGraph Agent (ReAct tool calling)** capabilities, with **Langfuse full-stack observability** and **MCP protocol tool bridging** for quick integration with external business systems (e.g. Spring Boot).
+An enterprise-grade intelligent conversational service built with **LangChain + LangGraph + LiteLLM Gateway + Local Embedding + ChromaDB + FastAPI + Vue3**. Includes both **RAG (Retrieval Augmented Generation)** and **LangGraph Agent (ReAct tool calling)** capabilities, with **LiteLLM unified gateway (multi-provider / load balancing / rate limiting / cost tracking)**, **Langfuse full-stack observability** and **MCP protocol tool bridging** for quick integration with external business systems (e.g. Spring Boot).
 
 ## Key Features
 
@@ -20,6 +20,14 @@ An enterprise-grade intelligent conversational service built with **LangChain + 
 - Exposes backend service capabilities (database, cache, business APIs) as tools for the Agent
 - Graceful degradation: automatically falls back when service is unreachable, Agent runs normally with local tools only
 - Multi-service support, API Key authentication, configurable timeout, zero intrusion to Agent core code
+
+### 🌐 LiteLLM Unified Gateway
+- **Multi-model / multi-provider**: DeepSeek, OpenAI, Anthropic, local Ollama models — one interface for all providers
+- **Load balancing & failover**: Multi-API-key round-robin / least-busy strategy, automatic failover, seamless key switching
+- **Dual-layer rate limiting**: Per-model (RPM/TPM) + per-API-key (max concurrency), protects quota and prevents overspend
+- **Cost tracking**: Real-time token usage and cost dashboard, breakdown by model / by key
+- **Env-var toggle**: `LITELLM_ENABLED` controls gateway mode, default off (direct mode), switch to gateway without code changes
+- Complementary to Langfuse: gateway handles aggregation stats, Langfuse handles call-level tracing
 
 ### 📊 Langfuse Full-Stack Observability
 - Docker Compose self-hosted 6-service cluster (Web + Worker + Postgres + ClickHouse + Redis + MinIO)
@@ -111,6 +119,7 @@ my/
 | Embedding Model | BAAI/bge-small-zh-v1.5 | Chinese embedding model, runs locally |
 | Vector Database | ChromaDB | Lightweight local vector store |
 | LLM | DeepSeek V4 (Flash / Pro) | Dynamic switching in frontend, OpenAI-compatible API |
+| LLM Gateway | LiteLLM Proxy | Multi-provider unified access, load balancing, failover, rate limiting, cost tracking |
 | Observability | Langfuse | LLM call tracing, RAG pipeline monitoring, Agent tool execution visualization |
 | MCP Protocol | langchain-mcp-adapters + mcp SDK | Bridge external MCP services (e.g. Spring Boot) tools to the Agent |
 | Web Framework | FastAPI | High-performance async HTTP server |
@@ -484,6 +493,15 @@ MyAgent (LangGraph StateGraph)  ← MemorySaver (thread_id = session_id)
   - [x] langchain-mcp-adapters adapter, MCP over SSE tools auto-converted to LangChain BaseTool
   - [x] mcp_client.py wrapper, multi-service config, API Key auth, configurable timeout
   - [x] Graceful degradation: MCP disabled / SDK missing / service unreachable — Agent starts normally with only local tools
+- [x] **LiteLLM unified gateway** — Integrated LiteLLM Proxy as LLM gateway with multi-provider access, load balancing, failover, rate limiting, and cost tracking
+  - [x] Unified LLM client (core/llm_client.py), eliminates duplicate code between MyChat and MyAgent
+  - [x] Centralized config module (core/config.py), replaces scattered os.getenv calls
+  - [x] Environment variable toggle (LITELLM_ENABLED), default off for zero regression risk
+  - [x] Dynamic model list: GET /api/models + frontend dynamic loading, fetched from Proxy in gateway mode
+  - [x] Docker Compose deployment with DeepSeek enabled + Ollama/Claude/GPT commented templates
+  - [x] Dual-layer rate limiting: per-model RPM/TPM + per-API-key max concurrency
+  - [x] Two-layer retry: gateway layer 3x (primary) + app layer 1x (fallback)
+- [x] **Startup scripts** — scripts/start-backend.sh + scripts/start-frontend.sh, one-click dev server launch
 - [ ] **Persistent memory** — Migrate session history from in-memory to persistent storage (SQLite / Redis), survive restarts
 
 ---

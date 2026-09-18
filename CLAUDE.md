@@ -8,20 +8,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 现已新增 LangGraph Agent：基于 LangGraph StateGraph 的智能体，内置 RAG 检索节点 + ReAct 工具循环，支持自定义 Tools，独立于普通 RAG 聊天。已集成 calculator 本地工具作为示例。
 
+**LiteLLM 统一网关**：可选接入 LiteLLM Proxy 作为 LLM 网关，支持多供应商统一接入、多 Key 负载均衡与故障转移、按模型/按 Key 限流、成本统计。通过 `LITELLM_ENABLED` 环境变量开关，默认关闭（直连模式），零回归风险。MyChat 和 MyAgent 通过统一的 `LLMClient` 单例共享 LLM 配置与缓存。
+
 ## 常用命令
 
 ### 后端（Python）
 
 ```bash
-# 安装依赖（conda 环境: mylearn, Python 3.11）
+# 一键启动（推荐，自动激活 conda 环境）
+./scripts/start-backend.sh
+
+# 手动启动（conda 环境: mylearn, Python 3.11）
 conda activate mylearn
 pip install -r requirements.txt
+uvicorn app_server:app --host 0.0.0.0 --port 8000 --reload
 
 # 初始化 / 重建向量数据库
 python pre_load_rag_index.py
-
-# 启动 FastAPI 服务（自动重载）
-uvicorn app_server:app --host 0.0.0.0 --port 8000 --reload
 
 # CLI 快速测试（单次非流式查询）
 python main.py
@@ -29,9 +32,15 @@ python main.py
 
 Swagger UI: `http://localhost:8000/docs`
 
+模型列表 API: `GET /api/models` — 直连模式返回静态白名单，网关模式从 LiteLLM Proxy 动态获取。
+
 ### 前端（Vue3 + Vite + Arco Design + Tailwind + vue-router）
 
 ```bash
+# 一键启动（推荐，自动检查依赖）
+./scripts/start-frontend.sh
+
+# 手动启动
 cd chat-web
 npm install
 npm run dev       # 开发服务器: http://localhost:5173
@@ -43,14 +52,43 @@ npm run preview   # 预览生产构建
 - `/` — RAG 智能问答（普通聊天）
 - `/agent` — Agent 智能对话（工具调用）
 
+模型列表从 `/api/models` 动态加载，启动时获取并缓存到 sessionStorage。
+
+### LiteLLM 网关（可选）
+
+Postgres + Redis 架构，单点部署即可平滑升级集群。
+
+```bash
+cd docker-litellm
+cp litellm.env.example litellm.env   # 首次：复制模板，修改密码和 API Key
+docker compose up -d                  # 启动（3 个容器：postgres + redis + litellm）
+docker compose ps                     # 查看状态（都 healthy 才就绪）
+docker compose logs -f litellm       # 日志
+```
+
+Web UI: `http://localhost:4000/ui`
+启动后在 `.env` 中设置 `LITELLM_ENABLED=true` 并重启后端。
+
+存储：
+- **Postgres**：API Key、成本统计、调用日志
+- **Redis**：全局限流计数、缓存（多实例部署计数一致）
+
+完整部署手册（含集群部署、运维、备份）见 `docker-litellm/deploy.md`。
+
 ## 环境说明
 
 - Python 3.11，conda 环境 `mylearn`（如沙箱中无法激活 conda，使用 `/Users/hubin/opt/anaconda3/envs/mylearn/bin/python`）
-- `.env` 中配置 `OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_API_BASE`（默认 DeepSeek），以及 `HF_HUB_OFFLINE=1` 和 `TRANSFORMERS_OFFLINE=1` 用于离线加载 embedding 模型
+- `.env` 中配置：
+  - `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_API_BASE`（默认 DeepSeek，直连模式使用）
+  - `ALLOWED_MODELS`：直连模式模型白名单（逗号分隔）
+  - `LITELLM_ENABLED` / `LITELLM_PROXY_URL` / `LITELLM_API_KEY`（网关模式，默认关闭）
+  - `LLM_RETRY_ATTEMPTS`：应用层重试次数（留空自动：网关=1，直连=3）
+  - `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`：离线加载 embedding 模型
 - Embedding 模型缓存在 `embeddings/`，ChromaDB 数据在 `chroma_db/`
 - 重建向量库：`rm -rf chroma_db && python pre_load_rag_index.py`
 - 前端：Node 20 LTS（Node 24 与 esbuild 不兼容）
 - 目前没有测试用例。`pytest` 在 `requirements.txt` 中是注释掉的可选依赖
+- 配置统一通过 `core/config.py` 的 `get_settings()` 读取，不要在各模块中直接 `os.getenv()`
 
 ## 架构
 
@@ -59,21 +97,26 @@ npm run preview   # 预览生产构建
 ```
 HTTP 请求 → app_server.py (FastAPI)
               ├─ 全局异常处理器（RAGBaseException / 校验异常 / 兜底）
+              ├─ GET /api/models → 动态模型列表（直连: 静态白名单 / 网关: 从 LiteLLM 拉取）
               ├─ /chat*       → MyRag.query() / query_stream()
               │                    ├─ Retriever (ChromaDB + BGE embeddings, top-k=2, score_threshold=0.3)
               │                    └─ with_fallback / with_fallback_stream
               │                         └─ with_llm_retry / with_llm_retry_stream
-              │                              └─ MyChat.rag_chat() → ChatOpenAI + StrOutputParser
+              │                              └─ MyChat → LLMClient.get_llm() → ChatOpenAI
               └─ /agent/chat* → MyAgent
                                    ├─ LangGraph StateGraph
                                    │    START → retrieve (RAG) → agent (LLM+tools) ↔ tools → END
                                    │    tool_error_count 达到 MAX_TOOL_RETRIES(2) 强制 end
                                    ├─ MemorySaver 持久化会话
-                                   ├─ 自有 LLM 实例（独立于 MyChat）
+                                   ├─ LLMClient（与 MyChat 共享 LLM 实例与缓存）
                                    └─ 工具（两层，统一注入 extra_tools）
                                         ├─ 本地工具: calculator 等（agent_tools.py）
                                         └─ MCP 工具: 外部 MCP over SSE 服务动态加载（mcp_client.py）
                                              └─ 服务配置: _SERVICES 列表 + .env MCP_<NAME>_*
+
+LLM 调用去向（由 LITELLM_ENABLED 决定）：
+  直连模式 → DeepSeek API (base_url = OPENAI_API_BASE)
+  网关模式 → LiteLLM Proxy → 多供应商 / 多 Key（负载均衡 + 故障转移 + 限流）
 ```
 
 ### 前端架构
@@ -105,6 +148,8 @@ my/
 ├── pre_load_rag_index.py      # 入口：向量库初始化脚本
 │
 ├── core/                      # 核心领域层
+│   ├── config.py              # 集中配置管理（get_settings() 单例）
+│   ├── llm_client.py          # 统一 LLM 客户端（LLMClient 单例，MyChat + MyAgent 共享）
 │   ├── my_rag.py              # RAG 核心服务（MyRag）
 │   ├── my_chat.py             # LLM 聊天封装（MyChat）
 │   ├── my_agent.py            # LangGraph Agent（MyAgent）
@@ -114,24 +159,36 @@ my/
 │   ├── agent_tools.py         # 本地工具工厂（calculator 等）
 │   └── mcp_client.py          # MCP 外部工具桥接（Spring Boot 等）
 │
-└── infra/                     # 基础设施层
-    ├── exceptions.py          # 分层异常体系
-    ├── retry_utils.py         # 重试与降级装饰器
-    └── langfuse_setup.py      # Langfuse 可观测性集成
+├── infra/                     # 基础设施层
+│   ├── exceptions.py          # 分层异常体系
+│   ├── retry_utils.py         # 重试与降级装饰器
+│   └── langfuse_setup.py      # Langfuse 可观测性集成
+│
+├── scripts/                   # 启动脚本
+│   ├── start-backend.sh       # 后端一键启动（自动激活 conda）
+│   └── start-frontend.sh      # 前端一键启动（自动检查依赖）
+│
+└── litellm/                   # LiteLLM 网关配置（可选）
+    ├── docker-compose.litellm.yaml
+    ├── litellm_config.yaml    # 模型/限流/负载均衡配置
+    └── litellm.env.example    # 环境变量模板
 ```
 
 **各模块说明**：
 
-- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 和 `MyAgent` 单例（Agent 绑定本地 + MCP 工具）。三层全局异常处理器。
+- **`app_server.py`** — FastAPI 入口。模块加载时初始化 `MyRag` 和 `MyAgent` 单例（Agent 绑定本地 + MCP 工具）。三层全局异常处理器。模型白名单从 `settings.allowed_models` 读取，网关模式下从 LiteLLM Proxy 动态获取（带 60s 缓存）。
+- **`core/config.py`** — 集中配置管理。`get_settings()` 返回单例 `Settings`，统一从 `.env` 读取。提供 `effective_base_url` / `effective_api_key` / `effective_retry_attempts` 等属性，自动适配直连/网关模式。新增配置一律在此处添加，不要在各模块中直接 `os.getenv()`。
+- **`core/llm_client.py`** — 统一 LLM 客户端。`LLMClient.get_instance()` 单例模式。`get_llm(model)` 懒加载并缓存 ChatOpenAI 实例。`map_error(e)` 统一异常映射。MyChat 和 MyAgent 都通过它获取 LLM 实例，消除重复代码。
 - **`core/my_rag.py`** — `MyRag` 类。Chroma 向量库，retriever 使用 `similarity_score_threshold`（k=2, threshold=0.3），低于阈值的文档被过滤。`query()` / `query_stream()` 返回 `(结果, is_fallback)`。LLM 调用外层包 `with_fallback`。
-- **`core/my_chat.py`** — `MyChat` 类。封装 `ChatOpenAI`（流式）。方法带 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。`_map_openai_error()` 映射 OpenAI 异常到自定义 `LLMError` 子类。
-- **`core/my_agent.py`** — `MyAgent` 类。LangGraph StateGraph：retrieve 节点（调用 MyRag._retrieve）+ agent 节点（自有 LLM + tools）+ `_tools_node` 包装层（错误计数，MAX_TOOL_RETRIES=2 次后强制结束）。MemorySaver 做 checkpoint。完全独立于 MyChat，自有 LLM 实例。
+- **`core/my_chat.py`** — `MyChat` 类。通过 `LLMClient` 获取 ChatOpenAI（流式）。方法带 `@with_llm_retry` / `@with_llm_retry_stream` 装饰器。
+- **`core/my_agent.py`** — `MyAgent` 类。LangGraph StateGraph：retrieve 节点（调用 MyRag._retrieve）+ agent 节点（LLM + tools）+ `_tools_node` 包装层（错误计数，MAX_TOOL_RETRIES=2 次后强制结束）。MemorySaver 做 checkpoint。通过 `LLMClient` 与 MyChat 共享 LLM 缓存。
 - **`core/rag_utils.py`** — `HybridReranker` 混合重排工具类。支持 weighted 和 rrf 两种策略。尚未集成到 MyRag 或 MyAgent 中。
 - **`tools/agent_tools.py`** — Agent 本地工具工厂函数。当前只有 `make_calculator_tool()`（AST 安全解析，支持加减乘除与嵌套表达式，失败抛异常）。新增本地工具时写新的工厂函数，在 `app_server.py` 的 `local_tools` 列表中追加即可。
 - **`tools/mcp_client.py`** — MCP 客户端封装。通过 `langchain-mcp-adapters` 将 MCP over SSE 服务的工具桥接到 Agent。优雅降级：`MCP_ENABLED=false` / SDK 缺失 / 配置缺失 / 服务不可达，均返回空工具列表，Agent 正常启动。支持多服务配置（`_SERVICES` 列表 + `.env` 中 `MCP_<NAME>_URL/TIMEOUT/API_KEY`）。每次工具调用独立建立 SSE 连接，天然支持重连。
 - **`infra/exceptions.py`** — 分层异常体系，根类 `RAGBaseException`。
-- **`infra/retry_utils.py`** — LLM 调用重试 + 兜底装饰器。可重试错误：限流 / 服务端 / 超时 / 连接（鉴权错误不重试）。默认 3 次指数退避。
-- **`infra/langfuse_setup.py`** — Langfuse 可观测性集成。CallbackHandler 工厂，优雅降级（SDK 未装或配置缺失时返回 None，不影响主流程）。
+- **`infra/retry_utils.py`** — LLM 调用重试 + 兜底装饰器。可重试错误：限流 / 服务端 / 超时 / 连接（鉴权错误不重试）。`max_attempts=None` 时从配置读取（直连 3 次 / 网关 1 次）。
+- **`infra/langfuse_setup.py`** — Langfuse 可观测性集成。CallbackHandler 工厂，优雅降级（SDK 未装或配置缺失时返回 None，不影响主流程）。部署手册见 `docker-langfuse/deploy.md`。
+- **`litellm/`** — LiteLLM 网关配置。Docker Compose 单容器部署，包含模型/限流/负载均衡配置。DeepSeek 模型默认启用，其他供应商（Ollama / Anthropic / OpenAI）为注释模板，取消注释即可启用。
 
 ### SSE 事件格式
 

@@ -1,0 +1,154 @@
+# ============================================
+# LiteLLM Proxy 配置文件
+#
+# 模型、限流、负载均衡、路由策略全部在此配置。
+# 修改后 LiteLLM 会自动热加载（无需重启）。
+#
+# 敏感信息（API Key、Master Key 等）请通过环境变量引用，
+# 格式为 "os.environ/变量名"，对应 litellm.env 中的值。
+# ============================================
+
+general_settings:
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  disable_admin_auth: false
+  ui: true
+  disable_spend_logs: false
+  store_model_cost: true
+
+# ============================================
+# 模型列表
+# 相同 model_name 的多组配置会自动负载均衡
+# ============================================
+
+model_list:
+  # ===== DeepSeek V4 Flash（多 key 轮询 + 故障转移） =====
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: openai/deepseek-reasoner
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+      api_base: "https://api.deepseek.com/v1"
+      rpm: 60       # 单 key 每分钟请求数限制
+      tpm: 500000   # 单 key 每分钟 token 数限制
+
+  # ===== DeepSeek V4 Pro =====
+  - model_name: deepseek-v4-pro
+    litellm_params:
+      model: openai/deepseek-chat
+      api_key: "os.environ/DEEPSEEK_API_KEY"
+      api_base: "https://api.deepseek.com/v1"
+      rpm: 30
+      tpm: 300000
+
+  # ===== 第二个 DeepSeek Key（高可用/扩容用，取消注释启用） =====
+  # 取消下面两块的注释，即可启用双 key 负载均衡
+  # - model_name: deepseek-v4-flash
+  #   litellm_params:
+  #     model: openai/deepseek-reasoner
+  #     api_key: "os.environ/DEEPSEEK_API_KEY_2"
+  #     api_base: "https://api.deepseek.com/v1"
+  #     rpm: 60
+  #     tpm: 500000
+  #
+  # - model_name: deepseek-v4-pro
+  #   litellm_params:
+  #     model: openai/deepseek-chat
+  #     api_key: "os.environ/DEEPSEEK_API_KEY_2"
+  #     api_base: "https://api.deepseek.com/v1"
+  #     rpm: 30
+  #     tpm: 300000
+
+  # ===== 本地 Ollama 模型（取消注释启用） =====
+  # 宿主机需先启动 Ollama: ollama run qwen2.5:7b
+  # - model_name: qwen2.5-7b
+  #   litellm_params:
+  #     model: ollama/qwen2.5:7b
+  #     api_base: "http://host.docker.internal:11434"
+  #     rpm: 120
+  #     tpm: 200000
+  #   model_info:
+  #     mode: chat
+
+  # ===== Anthropic Claude（取消注释启用） =====
+  # - model_name: claude-3.5-sonnet
+  #   litellm_params:
+  #     model: anthropic/claude-3-5-sonnet-20240620
+  #     api_key: "os.environ/ANTHROPIC_API_KEY"
+  #     rpm: 20
+  #     tpm: 200000
+  #   model_info:
+  #     mode: chat
+
+  # ===== OpenAI GPT（取消注释启用） =====
+  # - model_name: gpt-4o-mini
+  #   litellm_params:
+  #     model: gpt-4o-mini
+  #     api_key: "os.environ/OPENAI_API_KEY"
+  #     rpm: 60
+  #     tpm: 500000
+  #   model_info:
+  #     mode: chat
+
+# ============================================
+# 路由 / 负载均衡 / 重试策略
+# ============================================
+
+router_settings:
+  # 负载均衡策略：
+  #   simple-shuffle    - 随机打乱后顺序选择（简单高效）
+  #   least-busy        - 选择当前并发最少的实例（推荐，更均衡）
+  #   latency-based     - 选择延迟最低的实例（有额外探测开销）
+  routing_strategy: least-busy
+
+  # 网关层重试次数（跨实例故障转移）
+  num_retries: 3
+  retry_after: 1
+
+  # 健康检查：连续失败多少次后标记为不健康
+  allowed_fails: 2
+  # 不健康实例冷却时间（秒），冷却后重新尝试
+  cooldown_time: 60
+
+  enable_precaching: false
+
+# ============================================
+# 虚拟 API Key（应用端用这些 key 连接网关）
+# 每个 key 可以独立配置并发限制
+# ============================================
+
+api_key_list:
+  - user_id: my-rag-app
+    key: "os.environ/LITELLM_APP_KEY"
+    max_parallel_requests: 10
+    # 如果要限制该 key 只能用某些模型，取消注释下面这行：
+    # models: ["deepseek-v4-flash", "deepseek-v4-pro"]
+
+  # ===== 更多调用方（取消注释添加） =====
+  # - user_id: another-service
+  #   key: "os.environ/LITELLM_APP_KEY_2"
+  #   max_parallel_requests: 5
+
+# ============================================
+# 全局限流兜底（按模型维度，所有 key 加总）
+# ============================================
+
+rate_limits:
+  - model_name: deepseek-v4-flash
+    tpm: 1000000   # 全局每分钟 token 上限
+    rpm: 120       # 全局每分钟请求上限
+
+  - model_name: deepseek-v4-pro
+    tpm: 600000
+    rpm: 60
+
+# ============================================
+# 成本统计（单价：每 token 美元/人民币）
+# 注意：请根据实际价格调整
+# ============================================
+
+model_cost_map:
+  deepseek-v4-flash:
+    input_cost_per_token: 0.000000275
+    output_cost_per_token: 0.0000011
+  deepseek-v4-pro:
+    input_cost_per_token: 0.000001
+    output_cost_per_token: 0.000003
