@@ -5,19 +5,14 @@ LangGraph Agent — 基于 LangGraph 的智能体，内置 RAG 检索节点 + Re
     START → retrieve (RAG检索) → agent (LLM+tools) ↔ tools → END
 
 设计要点：
-- 自有 LLM 实例，独立于 MyChat，便于后续演化（子 agent、多模型、复杂图）
+- LLM 实例通过 LLMClient 获取，与 MyChat 共享配置与缓存
 - 只复用公共工具层：retry_utils（重试降级）、exceptions（异常体系）
 - MyRag 仅用于检索（只读调用 _retrieve），不修改其内部实现
 """
 
 import logging
-import os
 
-from dotenv import load_dotenv
-load_dotenv()
-
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
@@ -26,13 +21,9 @@ from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
 
 from core.my_rag import MyRag
+from core.llm_client import LLMClient
 from infra.exceptions import (
     LLMError,
-    LLMAuthError,
-    LLMRateLimitError,
-    LLMServerError,
-    LLMTimeoutError,
-    LLMConnectionError,
     RetrieverError,
     AgentError,
 )
@@ -60,42 +51,11 @@ class AgentState(MessagesState):
     max_retries_reached: bool = False
 
 
-def _map_openai_error(e: Exception) -> LLMError:
-    """将 OpenAI SDK 原始异常映射为项目自定义 LLMError 子类。
-
-    基于异常类名和消息中的关键词判断错误类型，
-    供 retry_utils 的重试装饰器识别可重试错误。
-    """
-    name = type(e).__name__
-    msg = str(e)
-    lowered = (name + msg).lower()
-    if "auth" in lowered or "authentication" in lowered:
-        return LLMAuthError(detail=msg)
-    if "rate" in lowered or "ratelimit" in lowered or "rate_limit" in lowered:
-        return LLMRateLimitError(detail=msg)
-    if "timeout" in lowered:
-        return LLMTimeoutError(detail=msg)
-    if "connection" in lowered or "api_connection" in lowered:
-        return LLMConnectionError(detail=msg)
-    if "apierror" in lowered or "serviceunavailable" in lowered or "internalservererror" in lowered:
-        return LLMServerError(detail=msg)
-    return LLMError(detail=msg)
-
-
 class MyAgent:
-    def __init__(self, rag: MyRag, extra_tools: list[BaseTool] | None = None):
+    def __init__(self, rag: MyRag, extra_tools: list[BaseTool] | None = None, llm_client: LLMClient | None = None):
         self.rag = rag
-
-        api_key = os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("OPENAI_API_BASE")
-        default_model = os.getenv("OPENAI_MODEL")
-        if not api_key or not base_url or not default_model:
-            raise LLMError(message="Agent LLM 配置缺失，请检查 OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL")
-
-        self.api_key = api_key
-        self.base_url = base_url
-        self.default_model = default_model
-        self._llm_cache: dict[str, ChatOpenAI] = {}
+        self.llm_client = llm_client or LLMClient.get_instance()
+        self.default_model = self.llm_client.default_model
 
         self.tools: list[BaseTool] = list(extra_tools) if extra_tools else []
 
@@ -120,19 +80,9 @@ class MyAgent:
         self.memory = MemorySaver()
         self.graph = self._build_graph()
 
-    def _get_llm(self, model: str | None = None) -> ChatOpenAI:
-        model_name = model or self.default_model
-        if model_name not in self._llm_cache:
-            try:
-                self._llm_cache[model_name] = ChatOpenAI(
-                    model=model_name,
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    streaming=True,
-                )
-            except Exception as e:
-                raise LLMError(message=f"Agent LLM 初始化失败: {model_name}", detail=str(e)) from e
-        return self._llm_cache[model_name]
+    def _get_llm(self, model: str | None = None):
+        """按模型名获取 ChatOpenAI 实例。"""
+        return self.llm_client.get_llm(model)
 
     def _build_graph(self):
         """构建 LangGraph StateGraph。
@@ -198,17 +148,18 @@ class MyAgent:
     def _agent_node(self, state: AgentState) -> dict:
         """Agent 节点：LLM + tools binding，决定直接回答还是调用工具。
 
-        LLM 调用外层套 with_llm_retry（3 次指数退避），
+        LLM 调用外层套 with_llm_retry，
         重试耗尽后返回 fallback 消息，图正常结束。
         """
         context = state.get("context", "")
         messages = state["messages"]
+        model = state.get("model")  # 从 state 中读取 model（由 chat/chat_stream 传入）
 
         system_text = self.system_prompt.format(context=context if context else "（暂无上下文）")
 
         full_messages = [SystemMessage(content=system_text)] + list(messages)
 
-        llm = self._get_llm()
+        llm = self._get_llm(model)
         if self.tools:
             llm = llm.bind_tools(self.tools)
 
@@ -216,7 +167,7 @@ class MyAgent:
             try:
                 return llm.invoke(full_messages)
             except Exception as e:
-                raise _map_openai_error(e) from e
+                raise LLMClient.map_error(e) from e
 
         try:
             @with_llm_retry()
@@ -244,7 +195,7 @@ class MyAgent:
             config.update(extra_config)
         try:
             result = self.graph.invoke(
-                {"messages": [HumanMessage(content=query)]},
+                {"messages": [HumanMessage(content=query)], "model": model or self.default_model},
                 config=config,
             )
         except Exception as e:
@@ -269,7 +220,7 @@ class MyAgent:
             try:
                 is_fallback = False
                 for event in self.graph.stream(
-                    {"messages": [HumanMessage(content=query)]},
+                    {"messages": [HumanMessage(content=query)], "model": model or self.default_model},
                     config=config,
                     stream_mode="values",
                 ):

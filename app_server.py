@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 
 from dotenv import load_dotenv
@@ -12,14 +13,16 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, field_validator
 
 from infra.exceptions import RAGBaseException, ValidationError, AgentError
+from core.config import get_settings
 from core.my_rag import MyRag
 from core.my_agent import MyAgent
 from tools.agent_tools import make_calculator_tool
 from infra.langfuse_setup import get_langfuse_handler, build_langchain_metadata
 from tools.mcp_client import load_all_mcp_tools, shutdown_mcp_clients
 
-ALLOWED_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
-DEFAULT_MODEL = "deepseek-v4-flash"
+settings = get_settings()
+
+DEFAULT_MODEL = settings.allowed_models[0] if settings.allowed_models else "deepseek-v4-flash"
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -28,6 +31,90 @@ logging.basicConfig(
 logger = logging.getLogger("app_server")
 
 app = FastAPI(title="My RAG Service")
+
+
+# ---- 动态模型列表缓存 ----
+_models_cache: list[str] | None = None
+_models_cache_expire_at: float = 0.0
+_MODELS_CACHE_TTL = 60.0  # 秒
+
+
+def _fetch_models_from_gateway() -> list[str]:
+    """从 LiteLLM Proxy 获取模型列表。失败返回空列表。"""
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("httpx 未安装，无法从网关获取模型列表")
+        return []
+
+    # proxy_url 通常是 http://host:4000/v1，去掉 /v1 后缀
+    base = settings.litellm_proxy_url
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = base.rstrip("/") + "/v1/models"
+
+    try:
+        resp = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {settings.litellm_api_key}"},
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        model_ids = []
+        seen = set()
+        for item in data.get("data", []):
+            mid = item.get("id", "")
+            if mid and mid not in seen:
+                seen.add(mid)
+                model_ids.append(mid)
+        return model_ids
+    except Exception as e:
+        logger.warning(f"从 LiteLLM 获取模型列表失败: {e}")
+        return []
+
+
+def get_allowed_models() -> list[str]:
+    """获取当前可用模型列表（带缓存）。
+
+    - 网关模式：从 LiteLLM Proxy 获取，缓存 60 秒
+    - 直连模式：返回 settings.allowed_models
+    """
+    global _models_cache, _models_cache_expire_at
+
+    if not settings.litellm_enabled:
+        return settings.allowed_models
+
+    now = time.time()
+    if _models_cache is not None and now < _models_cache_expire_at:
+        return _models_cache
+
+    models = _fetch_models_from_gateway()
+    if not models:
+        # 获取失败时返回配置中的白名单作为兜底
+        models = settings.allowed_models
+
+    _models_cache = models
+    _models_cache_expire_at = now + _MODELS_CACHE_TTL
+    return models
+
+
+def _is_model_allowed(model_name: str) -> bool:
+    """检查模型名是否在允许列表中。"""
+    if not model_name:
+        return False
+    return model_name in get_allowed_models()
+
+
+def _format_model_name(model_id: str) -> str:
+    """将模型 ID 转换为显示名称。"""
+    name_map = {
+        "deepseek-v4-flash": "DeepSeek V4 Flash",
+        "deepseek-v4-pro": "DeepSeek V4 Pro",
+        "deepseek-chat": "DeepSeek Chat",
+        "deepseek-reasoner": "DeepSeek Reasoner",
+    }
+    return name_map.get(model_id, model_id)
 
 
 @app.on_event("shutdown")
@@ -78,7 +165,7 @@ def add_history(session_id: str, role: str, content: str):
 
 
 def set_session_model(session_id: str, model: str | None):
-    if model and model in ALLOWED_MODELS:
+    if model and _is_model_allowed(model):
         sessions[session_id]["model"] = model
 
 
@@ -98,8 +185,9 @@ class QueryRequest(BaseModel):
     def model_must_be_allowed(cls, v):
         if v is None:
             return v
-        if v not in ALLOWED_MODELS:
-            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        if not _is_model_allowed(v):
+            allowed = get_allowed_models()
+            raise ValueError(f"model 必须是以下值之一: {allowed}")
         return v
 
 
@@ -119,8 +207,9 @@ class StreamRequest(BaseModel):
     def model_must_be_allowed(cls, v):
         if v is None:
             return v
-        if v not in ALLOWED_MODELS:
-            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        if not _is_model_allowed(v):
+            allowed = get_allowed_models()
+            raise ValueError(f"model 必须是以下值之一: {allowed}")
         return v
 
 
@@ -176,6 +265,32 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.get("/")
 def index():
     return {"message": "RAG service running"}
+
+
+@app.get("/api/models")
+def list_models():
+    """获取可用模型列表。
+
+    - 网关模式：从 LiteLLM Proxy 拉取（带 60s 缓存）
+    - 直连模式：返回配置中的静态白名单
+    """
+    models = get_allowed_models()
+    source = "litellm" if settings.litellm_enabled else "direct"
+
+    result = []
+    for mid in models:
+        result.append({
+            "id": mid,
+            "name": _format_model_name(mid),
+            "description": "",
+        })
+
+    return {
+        "models": result,
+        "default": DEFAULT_MODEL,
+        "source": source,
+        "gateway_enabled": settings.litellm_enabled,
+    }
 
 
 @app.post("/chat")
@@ -283,7 +398,7 @@ def _get_agent_session_id(request: Request) -> str:
 
 
 def _set_agent_session_model(session_id: str, model: str | None):
-    if model and model in ALLOWED_MODELS:
+    if model and _is_model_allowed(model):
         agent_sessions[session_id]["model"] = model
 
 
@@ -303,8 +418,9 @@ class AgentQueryRequest(BaseModel):
     def model_must_be_allowed(cls, v):
         if v is None:
             return v
-        if v not in ALLOWED_MODELS:
-            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        if not _is_model_allowed(v):
+            allowed = get_allowed_models()
+            raise ValueError(f"model 必须是以下值之一: {allowed}")
         return v
 
 
@@ -324,8 +440,9 @@ class AgentStreamRequest(BaseModel):
     def model_must_be_allowed(cls, v):
         if v is None:
             return v
-        if v not in ALLOWED_MODELS:
-            raise ValueError(f"model 必须是以下值之一: {ALLOWED_MODELS}")
+        if not _is_model_allowed(v):
+            allowed = get_allowed_models()
+            raise ValueError(f"model 必须是以下值之一: {allowed}")
         return v
 
 

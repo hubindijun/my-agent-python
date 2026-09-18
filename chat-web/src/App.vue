@@ -95,7 +95,7 @@
 </template>
 
 <script setup>
-import { ref, provide, watch } from 'vue'
+import { ref, provide, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { IconDelete } from '@arco-design/web-vue/es/icon'
 
@@ -104,21 +104,51 @@ const route = useRoute()
 const STORAGE_MODEL_KEY = 'chat_model'
 const DEFAULT_MODEL = 'deepseek-v4-flash'
 
-const modelOptions = [
+const FALLBACK_MODELS = [
   { value: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
   { value: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
 ]
 
-const savedModel = sessionStorage.getItem(STORAGE_MODEL_KEY)
-const currentModel = ref(
-  savedModel && modelOptions.some(m => m.value === savedModel)
-    ? savedModel
-    : DEFAULT_MODEL
-)
+const modelOptions = ref([])
+const modelsLoading = ref(true)
+const currentModel = ref(DEFAULT_MODEL)
+
+async function fetchModels() {
+  try {
+    const resp = await fetch('/api/models')
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+    const data = await resp.json()
+    if (data.models && data.models.length > 0) {
+      modelOptions.value = data.models.map(m => ({
+        value: m.id,
+        label: m.name || m.id,
+      }))
+    } else {
+      modelOptions.value = [...FALLBACK_MODELS]
+    }
+  } catch (e) {
+    console.error('加载模型列表失败，使用默认列表', e)
+    modelOptions.value = [...FALLBACK_MODELS]
+  } finally {
+    modelsLoading.value = false
+  }
+
+  // 恢复保存的模型，如果不在列表中则切到第一个
+  const saved = sessionStorage.getItem(STORAGE_MODEL_KEY)
+  if (saved && modelOptions.value.some(m => m.value === saved)) {
+    currentModel.value = saved
+  } else if (modelOptions.value.length > 0) {
+    currentModel.value = modelOptions.value[0].value
+  }
+}
 
 const onModelChange = () => {
   sessionStorage.setItem(STORAGE_MODEL_KEY, currentModel.value)
 }
+
+onMounted(() => {
+  fetchModels()
+})
 
 let clearHandler = null
 const chatStore = {
